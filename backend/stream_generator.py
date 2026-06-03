@@ -14,7 +14,7 @@ def generate_messages(delay_seconds=1.0):
                 
                 row_clean = {k.strip().lower(): v for k, v in row.items() if k is not None}
                 
-       
+                
                 message = {
                     "id": int(row_clean.get("id")) if row_clean.get("id") else None,
                     "warehouse_block": row_clean.get("warehouse_block"),

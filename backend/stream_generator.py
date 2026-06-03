@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 
 def generate_messages(delay_seconds=1.0):
-    """ CSV file එක කියවලා live stream එකක් විදිහට JSON data generate කරනවා """
+   
     csv_file_path = "data/business_dataset.csv"
     
     while True:

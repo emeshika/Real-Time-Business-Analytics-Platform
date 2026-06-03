@@ -9,13 +9,12 @@ def generate_messages(delay_seconds=1.0):
     
     while True:
         with open(csv_file_path, mode='r', encoding='utf-8') as file:
-            csv_reader = csv.DictReader(file)
-            
+            csv_reader = csv.DictReader(file) 
             for row in csv_reader:
                 
                 row_clean = {k.strip().lower(): v for k, v in row.items() if k is not None}
                 
-      
+       
                 message = {
                     "id": int(row_clean.get("id")) if row_clean.get("id") else None,
                     "warehouse_block": row_clean.get("warehouse_block"),
@@ -43,4 +42,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nStream generator stopped.")
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\nAn error occurred: {e}") 
+           

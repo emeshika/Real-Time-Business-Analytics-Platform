@@ -1,11 +1,11 @@
 """
 kafka_producer.py
------------------
+------------------
 Connects to a locally-running Kafka broker and publishes every message
 produced by stream_generator.py to the topic  live-business-transactions.
 
 Prerequisites
--------------
+--------------
 1.  Kafka running locally on localhost:9092  (see README.md for setup steps)
 2.  pip install kafka-python
 

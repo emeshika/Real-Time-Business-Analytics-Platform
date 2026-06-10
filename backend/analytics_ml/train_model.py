@@ -1,0 +1,198 @@
+"""
+train_model.py  —  Phase 2
+Team 03 | PulseBI Project
+Fetches real hourly_metrics from MongoDB Atlas,
+trains XGBoost to predict total_cost (revenue),
+saves model to analytics_ml/models/sales_model.pkl
+"""
+
+import os
+import pandas as pd
+import numpy as np
+from pymongo import MongoClient
+from dotenv import load_dotenv
+from xgboost import XGBRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, r2_score
+import joblib
+from datetime import datetime
+
+load_dotenv()
+
+# ─────────────────────────────────────────────────────────────────
+# 1. Connect to MongoDB
+# ─────────────────────────────────────────────────────────────────
+print("\n" + "="*55)
+print("  PulseBI — train_model.py  |  Phase 2")
+print("="*55)
+print("\n[1/6] Connecting to MongoDB Atlas...")
+
+MONGO_URI = os.getenv(
+    "MONGODB_URI",
+    "mongodb+srv://sandudul_db_user:WMDCHXt2h7ASSmSy@cluster0.apfqidv.mongodb.net/"
+)
+client = MongoClient(MONGO_URI)
+db = client["stream_analytics"]
+print("      ✓ Connected successfully.")
+
+# ─────────────────────────────────────────────────────────────────
+# 2. Fetch all hourly_metrics documents
+# ─────────────────────────────────────────────────────────────────
+print("\n[2/6] Fetching data from 'hourly_metrics' collection...")
+
+cursor = db.hourly_metrics.find({}, {"_id": 0})
+df = pd.DataFrame(list(cursor))
+
+print(f"      Records fetched  : {len(df)}")
+print(f"      Columns found    : {list(df.columns)}")
+
+if df.empty:
+    print("\n  ERROR: hourly_metrics is empty.")
+    print("         Ask Team 02 to run their Kafka pipeline first.")
+    exit()
+
+# ─────────────────────────────────────────────────────────────────
+# 3. Clean and prepare
+# ─────────────────────────────────────────────────────────────────
+print("\n[3/6] Cleaning and preparing data...")
+
+# Parse hour_start as the timestamp
+df["timestamp"] = pd.to_datetime(df["hour_start"])
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+# Drop rows where target value is missing
+df = df.dropna(subset=["total_cost"])
+
+# The features we will use — all confirmed to exist in your collection
+FEATURE_COLS = [
+    "total_transactions",
+    "avg_discount",
+    "avg_rating",
+    "total_weight",
+    # on_time_rate intentionally excluded — it is always 1.0 (no variance)
+]
+
+# Fill any missing values with column mean
+for col in FEATURE_COLS:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = df[col].fillna(df[col].mean())
+
+print(f"      Clean rows       : {len(df)}")
+print(f"      Date range       : {df['timestamp'].min()} → {df['timestamp'].max()}")
+
+# ─────────────────────────────────────────────────────────────────
+# 4. Feature engineering — time and lag features
+# ─────────────────────────────────────────────────────────────────
+print("\n[4/6] Engineering time and lag features...")
+
+# Time-based features extracted from the timestamp
+df["hour"]          = df["timestamp"].dt.hour
+df["day_of_week"]   = df["timestamp"].dt.dayofweek    # 0=Mon, 6=Sun
+df["day_of_month"]  = df["timestamp"].dt.day
+df["is_weekend"]    = (df["day_of_week"] >= 5).astype(int)
+
+# Lag features — total_cost from previous hours
+df["lag_1h"]  = df["total_cost"].shift(1)   # 1 hour ago
+df["lag_2h"]  = df["total_cost"].shift(2)   # 2 hours ago
+df["lag_3h"]  = df["total_cost"].shift(3)   # 3 hours ago
+
+# Rolling average of past 3 hours
+df["rolling_3h_mean"] = df["total_cost"].rolling(window=3).mean()
+
+# Drop rows that now have NaN due to lag/rolling
+df = df.dropna().reset_index(drop=True)
+
+print(f"      Rows after lag features : {len(df)}")
+
+if len(df) < 5:
+    print("\n  WARNING: Very few rows remain after feature engineering.")
+    print("           This usually means not enough hourly data exists yet.")
+    print("           Ask Team 02 to run their pipeline longer.")
+    print("           Continuing anyway for testing purposes...\n")
+
+# ─────────────────────────────────────────────────────────────────
+# 5. Train the XGBoost model
+# ─────────────────────────────────────────────────────────────────
+print("\n[5/6] Training XGBoost Regressor...")
+
+ALL_FEATURES = (
+    FEATURE_COLS
+    + ["hour", "day_of_week", "day_of_month", "is_weekend"]
+    + ["lag_1h", "lag_2h", "lag_3h", "rolling_3h_mean"]
+)
+
+# Only keep features that actually exist in df
+FINAL_FEATURES = [f for f in ALL_FEATURES if f in df.columns]
+TARGET = "total_cost"
+
+print(f"      Features used    : {FINAL_FEATURES}")
+print(f"      Target variable  : {TARGET}")
+
+X = df[FINAL_FEATURES]
+y = df[TARGET]
+
+# Time-ordered split — no shuffling (important for time-series)
+split_idx = int(len(df) * 0.8)
+X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+print(f"      Training rows    : {len(X_train)}")
+print(f"      Testing rows     : {len(X_test)}")
+
+model = XGBRegressor(
+    n_estimators=300,
+    learning_rate=0.05,
+    max_depth=4,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    min_child_weight=2,
+    random_state=42,
+    verbosity=0
+)
+model.fit(X_train, y_train)
+
+# Evaluate
+if len(X_test) > 0:
+    y_pred = model.predict(X_test)
+    mae    = mean_absolute_error(y_test, y_pred)
+    r2     = r2_score(y_test, y_pred)
+    print(f"\n      ── Evaluation Results ──────────────────")
+    print(f"      MAE (Mean Absolute Error)  : {mae:,.2f}")
+    print(f"      R² Score                   : {r2:.4f}")
+    print(f"      Interpretation: predictions are off by ~{mae:,.0f} on average")
+    if r2 > 0.8:
+        print(f"      Model quality              : ✓ Good  (R² > 0.8)")
+    elif r2 > 0.5:
+        print(f"      Model quality              : ~ Fair  (R² > 0.5)")
+    else:
+        print(f"      Model quality              : ✗ Needs more data")
+else:
+    print("      (Skipping evaluation — not enough data for a test split)")
+
+# ─────────────────────────────────────────────────────────────────
+# 6. Save the model
+# ─────────────────────────────────────────────────────────────────
+print("\n[6/6] Saving model...")
+
+MODEL_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+MODEL_PATH = os.path.join(MODEL_DIR, "sales_model.pkl")
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Save model AND feature list together — forecast_engine.py will need both
+joblib.dump(
+    {
+        "model"    : model,
+        "features" : FINAL_FEATURES,
+        "target"   : TARGET,
+        "trained_at": datetime.utcnow().isoformat(),
+        "mae"      : float(mae) if len(X_test) > 0 else None,
+    },
+    MODEL_PATH
+)
+
+print(f"      ✓ Saved to : {MODEL_PATH}")
+print("\n" + "="*55)
+print("  ✅  train_model.py finished successfully!")
+print("      Next → run: python analytics_ml/forecast_engine.py")
+print("="*55 + "\n")

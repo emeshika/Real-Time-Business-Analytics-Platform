@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, List, Dict
 
 from fastapi import WebSocket
 
@@ -36,7 +36,7 @@ class ConnectionManager:
     """Keep track of every active WebSocket and broadcast to all of them."""
 
     def __init__(self) -> None:
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: List[WebSocket] = []
 
     # -- lifecycle --
 
@@ -58,7 +58,7 @@ class ConnectionManager:
 
     # -- broadcasting --
 
-    async def broadcast(self, data: dict[str, Any]) -> None:
+    async def broadcast(self, data: Dict[str, Any]) -> None:
         """
         Send *data* to **every** connected client.
 
@@ -68,7 +68,7 @@ class ConnectionManager:
             return
 
         payload = json.dumps(data, default=_json_default)
-        stale: list[WebSocket] = []
+        stale: List[WebSocket] = []
 
         for ws in self.active_connections:
             try:

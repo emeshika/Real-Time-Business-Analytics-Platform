@@ -17,6 +17,7 @@ MONGODB_DAILY_COLLECTION          (default: daily_metrics)
 
 import os
 from datetime import datetime, timezone
+from typing import Optional
 
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -25,7 +26,9 @@ load_dotenv(override=True)
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-DEFAULT_MONGODB_URI = "mongodb://localhost:27017"
+DEFAULT_MONGODB_URI = (
+    "mongodb+srv://sandudul_db_user:WMDCHXt2h7ASSmSy@cluster0.apfqidv.mongodb.net/"
+)
 DEFAULT_DATABASE_NAME = "stream_analytics"
 DEFAULT_TRANSACTIONS_COLLECTION = "transactions"
 DEFAULT_HOURLY_COLLECTION = "hourly_metrics"
@@ -35,7 +38,7 @@ DEFAULT_PREDICTIONS_COLLECTION = "predictions"
 
 # ── Singleton-style connection ────────────────────────────────────────────────
 
-_client: MongoClient | None = None
+_client: Optional[MongoClient] = None
 
 
 def get_client() -> MongoClient:

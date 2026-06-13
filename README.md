@@ -4,7 +4,7 @@ PulseBI is an end-to-end Real-Time Business Intelligence (BI) and Analytics Plat
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 - **Live Data Streaming & Ingestion:** Scalable pipeline capable of handling continuous high-velocity business data streams.
 - **Real-Time Stream Processing:** Instant data cleaning, aggregation, and key metric computation as events occur.
@@ -14,7 +14,7 @@ PulseBI is an end-to-end Real-Time Business Intelligence (BI) and Analytics Plat
 
 ---
 
-## 🛠️ Tech Stack (Proposed)
+## Tech Stack (Proposed)
 
 - **Frontend:** React.js, Tailwind CSS, Recharts / Chart.js, Socket.io-client
 - **Backend & APIs:** Python (FastAPI / Flask) OR Node.js (Express)
@@ -25,7 +25,7 @@ PulseBI is an end-to-end Real-Time Business Intelligence (BI) and Analytics Plat
 
 ---
 
-## 📂 Repository Structure & Module Allocation
+## Repository Structure & Module Allocation
 
 The project is structured into clear modules to allow parallel development across 5 sub-teams (couples):
 
@@ -40,7 +40,7 @@ pulse-bi-platform/
 
 ---
 
-## ⚡ Getting Started
+## Getting Started
 
 ### Prerequisites
 

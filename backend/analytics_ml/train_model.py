@@ -15,7 +15,22 @@ from xgboost import XGBRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score
 import joblib
+import json
+import math
 from datetime import datetime
+
+try:
+    from analytics_ml.metrics import (
+        mean_absolute_error as calculate_mae,
+        root_mean_squared_error,
+        mean_absolute_percentage_error,
+    )
+except ModuleNotFoundError:
+    from metrics import (
+        mean_absolute_error as calculate_mae,
+        root_mean_squared_error,
+        mean_absolute_percentage_error,
+    )
 
 load_dotenv()
 
@@ -157,8 +172,17 @@ if len(X_test) > 0:
     y_pred = model.predict(X_test)
     mae    = mean_absolute_error(y_test, y_pred)
     r2     = r2_score(y_test, y_pred)
+    rmse   = root_mean_squared_error(y_test, y_pred)
+    mape   = mean_absolute_percentage_error(y_test, y_pred)
+    baseline_predicted = y.iloc[split_idx - 1:-1].tolist()
+    baseline_actual = y_test.tolist()
+    baseline_mae = calculate_mae(baseline_actual, baseline_predicted)
+    baseline_rmse = root_mean_squared_error(baseline_actual, baseline_predicted)
+    baseline_mape = mean_absolute_percentage_error(baseline_actual, baseline_predicted)
     print(f"\n      ── Evaluation Results ──────────────────")
     print(f"      MAE (Mean Absolute Error)  : {mae:,.2f}")
+    print(f"      RMSE                       : {rmse:,.2f}")
+    print(f"      MAPE                       : {mape:.2f}%")
     print(f"      R² Score                   : {r2:.4f}")
     print(f"      Interpretation: predictions are off by ~{mae:,.0f} on average")
     if r2 > 0.8:
@@ -168,6 +192,8 @@ if len(X_test) > 0:
     else:
         print(f"      Model quality              : ✗ Needs more data")
 else:
+    rmse = mape = baseline_mae = baseline_rmse = baseline_mape = None
+    r2 = None
     print("      (Skipping evaluation — not enough data for a test split)")
 
 # ─────────────────────────────────────────────────────────────────
@@ -187,9 +213,40 @@ joblib.dump(
         "target"   : TARGET,
         "trained_at": datetime.utcnow().isoformat(),
         "mae"      : float(mae) if len(X_test) > 0 else None,
+        "rmse"     : float(rmse) if rmse is not None else None,
+        "mape"     : float(mape) if mape is not None else None,
+        "r2"       : float(r2) if r2 is not None else None,
     },
     MODEL_PATH
 )
+
+trained_at = datetime.utcnow().isoformat()
+metrics = {
+    "model_name": "xgboost_v1",
+    "train_size": len(X_train),
+    "test_size": len(X_test),
+    "date_range": {
+        "start": df["timestamp"].min().isoformat(),
+        "end": df["timestamp"].max().isoformat(),
+    },
+    "trained_at": trained_at,
+    "metrics": {
+        "model": {
+            "mae": float(mae) if len(X_test) > 0 else None,
+            "rmse": float(rmse) if rmse is not None else None,
+            "mape": float(mape) if mape is not None else None,
+            "r2": float(r2) if r2 is not None else None,
+        },
+        "naive_baseline": {
+            "mae": float(baseline_mae) if baseline_mae is not None else None,
+            "rmse": float(baseline_rmse) if baseline_rmse is not None else None,
+            "mape": float(baseline_mape) if baseline_mape is not None else None,
+        },
+    },
+}
+METRICS_PATH = os.path.join(MODEL_DIR, "metrics.json")
+with open(METRICS_PATH, "w", encoding="utf-8") as metrics_file:
+    json.dump(metrics, metrics_file, indent=2)
 
 print(f"      ✓ Saved to : {MODEL_PATH}")
 print("\n" + "="*55)

@@ -1,7 +1,7 @@
 import csv
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 def generate_messages(delay_seconds=1.0, loop=True):
     csv_file_path = "data/business_dataset.csv"
@@ -39,7 +39,7 @@ def generate_messages(delay_seconds=1.0, loop=True):
                     
                     "reached_on_time": int(row_clean.get("reached.on.time_y.n", 0)) if row_clean.get("reached.on.time_y.n") else None,
                     
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 }
                 
                 yield message

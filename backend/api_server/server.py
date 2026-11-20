@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api_server import db
 from api_server.routes.historical import router as historical_router
 from api_server.routes.predictions import router as predictions_router
+from api_server.routes.alerts import router as alerts_router
 from api_server.websocket_handler import manager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -97,6 +98,31 @@ async def _watch_predictions() -> None:
             log.error("Prediction watcher error: %s", exc)
 
 
+async def _watch_alerts() -> None:
+    """Poll the alerts collection and broadcast newly-created alerts."""
+    col = db.get_alerts_col()
+    last_count = col.count_documents({})
+    log.info("Alert watcher started (baseline count=%d)", last_count)
+
+    while True:
+        await asyncio.sleep(3)
+        try:
+            current_count = col.count_documents({})
+            if current_count > last_count:
+                latest = list(
+                    col.find({}, {"_id": 0})
+                    .sort("created_at", -1)
+                    .limit(current_count - last_count)
+                )
+                for alert in reversed(latest):
+                    await manager.broadcast(
+                        {"type": "new_alert", "data": db.serialise_doc(alert)}
+                    )
+                last_count = current_count
+        except Exception as exc:
+            log.error("Alert watcher error: %s", exc)
+
+
 # ── Lifespan (startup / shutdown) ─────────────────────────────────────────────
 
 
@@ -112,12 +138,14 @@ async def lifespan(app: FastAPI):
     # Launch background watchers
     tx_task = asyncio.create_task(_watch_transactions())
     pred_task = asyncio.create_task(_watch_predictions())
+    alert_task = asyncio.create_task(_watch_alerts())
 
     yield  # ── app is running ──
 
     # Shutdown
     tx_task.cancel()
     pred_task.cancel()
+    alert_task.cancel()
     db.close()
     log.info("🛑  PulseBI API shut down.")
 
@@ -144,6 +172,7 @@ app.add_middleware(
 
 app.include_router(historical_router)
 app.include_router(predictions_router)
+app.include_router(alerts_router)
 
 # ── Health check ──────────────────────────────────────────────────────────────
 

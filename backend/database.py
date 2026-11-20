@@ -35,6 +35,7 @@ DEFAULT_DATABASE_NAME = "stream_analytics"
 DEFAULT_TRANSACTIONS_COLLECTION = "transactions"
 DEFAULT_HOURLY_METRICS_COLLECTION = "hourly_metrics"
 DEFAULT_DAILY_METRICS_COLLECTION = "daily_metrics"
+DEFAULT_ALERTS_COLLECTION = "alerts"
 
 
 # ── Connection helpers ────────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ def _build_update(time_key, time_value, metrics_delta):
     importance = metrics_delta.get("product_importance", "Unknown")
 
     update = {
-        "$setOnInsert": {time_key: time_value, "created_at": now},
+        "$setOnInsert": {time_key: time_value, "created_at": now, "source": "stream"},
         "$inc": {
             "total_transactions": 1,
             "total_cost": float(metrics_delta.get("total_cost", 0.0)),
@@ -138,6 +139,9 @@ def _recompute_averages(collection, doc_id, updated_doc):
     avg_discount = float(updated_doc.get("discount_sum", 0.0)) / total
     on_time_rate = float(updated_doc.get("on_time_sum", 0)) / total
     avg_rating = float(updated_doc.get("rating_sum", 0)) / total
+    updated_doc["avg_discount"] = round(avg_discount, 4)
+    updated_doc["on_time_rate"] = round(on_time_rate, 4)
+    updated_doc["avg_rating"] = round(avg_rating, 4)
 
     collection.update_one(
         {"_id": doc_id},
@@ -187,3 +191,65 @@ def update_daily_metrics(daily_col, date_start, metrics_delta):
     )
     _recompute_averages(daily_col, updated["_id"], updated)
     return updated
+
+
+def build_metric_delta(cleaned):
+    """Build one MongoDB aggregation delta from a cleaned transaction."""
+    return {
+        "total_cost": cleaned.get("cost_of_product", 0.0),
+        "discount_sum": cleaned.get("discount_offered", 0.0),
+        "on_time_sum": cleaned.get("reached_on_time", 0),
+        "rating_sum": cleaned.get("customer_rating", 0),
+        "total_weight": cleaned.get("weight_in_gms", 0.0),
+        "mode_of_shipment": cleaned.get("mode_of_shipment", "Unknown"),
+        "warehouse_block": cleaned.get("warehouse_block", "Unknown"),
+        "gender": cleaned.get("gender", "Unknown"),
+        "product_importance": cleaned.get("product_importance", "Unknown"),
+    }
+
+
+def create_hourly_alerts(alerts_col, hourly_col, hour_start, hourly_doc):
+    """Create cooldowned operational alerts after an hourly metric update."""
+    from datetime import timedelta
+
+    alerts = []
+    hour_iso = hour_start.isoformat()
+    on_time_rate = float(hourly_doc.get("on_time_rate", 0.0) or 0.0) * 100
+
+    rules = []
+    if on_time_rate < 65:
+        rules.append({
+            "rule": "low_on_time_delivery",
+            "severity": "high",
+            "message": f"Hourly on-time delivery is {on_time_rate:.1f}% (below 65%).",
+        })
+
+    previous_hour = hour_start - timedelta(hours=1)
+    previous = hourly_col.find_one({"hour_start": previous_hour})
+    current_revenue = float(hourly_doc.get("total_cost", 0.0) or 0.0)
+    previous_revenue = float(previous.get("total_cost", 0.0) or 0.0) if previous else None
+    if previous_revenue not in (None, 0):
+        drop_pct = (current_revenue - previous_revenue) / previous_revenue * 100
+        if drop_pct <= -40:
+            rules.append({
+                "rule": "hourly_revenue_drop",
+                "severity": "high",
+                "message": f"Hourly revenue dropped {abs(drop_pct):.1f}% versus the previous completed hour.",
+            })
+
+    for rule in rules:
+        existing = alerts_col.find_one({"target_hour": hour_iso, "rule": rule["rule"]})
+        if existing:
+            continue
+        alert = {
+            "source": "stream",
+            "target_hour": hour_iso,
+            "rule": rule["rule"],
+            "severity": rule["severity"],
+            "message": rule["message"],
+            "created_at": datetime.now(timezone.utc),
+        }
+        result = alerts_col.insert_one(alert)
+        alert["_id"] = result.inserted_id
+        alerts.append(alert)
+    return alerts

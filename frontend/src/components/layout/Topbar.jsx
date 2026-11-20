@@ -1,6 +1,44 @@
+import { useEffect, useRef, useState } from 'react';
 import LiveBadge, { LiveClock } from '../common/LiveBadge';
+import { fetchAlerts } from '../../services/api';
+import wsService from '../../services/websocket';
 
 export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [recentAlerts, setRecentAlerts] = useState([]);
+  const [unread, setUnread] = useState(0);
+  const initialised = useRef(false);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const result = await fetchAlerts(50);
+        setRecentAlerts(result.alerts || []);
+        if (initialised.current) setUnread((current) => current);
+        initialised.current = true;
+      } catch {
+        setRecentAlerts([]);
+      }
+    };
+    load();
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const onAlert = (alert) => {
+      setRecentAlerts((current) => [alert, ...current].slice(0, 50));
+      setUnread((current) => current + 1);
+    };
+    wsService.on('new_alert', onAlert);
+    return () => wsService.off('new_alert', onAlert);
+  }, []);
+
+  const toggleAlerts = () => {
+    setAlertsOpen((open) => !open);
+    if (!alertsOpen) setUnread(0);
+  };
+
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -15,9 +53,13 @@ export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
         <LiveBadge status={wsStatus} />
 
         {/* Notification bell */}
-        <div className="btn-icon" style={{ position: 'relative' }}>
-          🔔
-          {alertCount > 0 && (
+        <div
+          className="topbar-text-button"
+          style={{ position: 'relative', cursor: 'pointer' }}
+          onClick={toggleAlerts}
+        >
+          Alerts
+          {(unread + alertCount) > 0 && (
             <span style={{
               position: 'absolute', top: -4, right: -4,
               background: 'var(--danger)',
@@ -27,13 +69,13 @@ export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
               padding: '1px 5px',
               minWidth: 16, textAlign: 'center',
             }}>
-              {alertCount > 9 ? '9+' : alertCount}
+              {(unread + alertCount) > 9 ? '9+' : (unread + alertCount)}
             </span>
           )}
         </div>
 
         {/* Settings */}
-        <div className="btn-icon">⚙️</div>
+        <div className="topbar-text-button">Menu</div>
 
         {/* Avatar */}
         <div style={{
@@ -48,6 +90,23 @@ export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
           BI
         </div>
       </div>
+      {alertsOpen && (
+        <div className="alerts-panel">
+          <div className="chart-title" style={{ marginBottom: 8 }}>Recent Alerts</div>
+          {recentAlerts.length === 0 ? (
+            <div className="chart-subtitle">No alerts recorded</div>
+          ) : recentAlerts.map((alert, index) => (
+            <div className="alerts-panel-item" key={alert._id || `${alert.created_at}-${index}`}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                {alert.created_at ? new Date(alert.created_at).toLocaleString() : 'Unknown time'}
+                {' · '}<strong>{alert.severity || 'info'}</strong>
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginTop: 2 }}>{alert.rule || 'Operational alert'}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{alert.message}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </header>
   );
 }

@@ -32,10 +32,10 @@ export function useAlerts(maxAlerts = 5) {
 }
 
 const ALERT_CONFIG = {
-  anomaly:    { icon: '⚠️', defaultTitle: 'Anomaly Detected' },
-  prediction: { icon: '🤖', defaultTitle: 'New Prediction'   },
-  info:       { icon: 'ℹ️', defaultTitle: 'System Update'    },
-  success:    { icon: '✅', defaultTitle: 'Success'           },
+  anomaly:    { defaultTitle: 'Anomaly Detected' },
+  prediction: { defaultTitle: 'New Prediction'   },
+  info:       { defaultTitle: 'System Update'    },
+  success:    { defaultTitle: 'Success'           },
 };
 
 export default function AlertBanner({ alerts, onClose }) {
@@ -49,7 +49,6 @@ export default function AlertBanner({ alerts, onClose }) {
 
         return (
           <div key={alert.id} className={`alert-item ${alert.type || 'info'}`}>
-            <span className="alert-icon">{config.icon}</span>
             <div className="alert-content">
               <div className="alert-title">{alert.title || config.defaultTitle}</div>
               <div className="alert-message">{alert.message}</div>

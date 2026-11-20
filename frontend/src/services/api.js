@@ -46,4 +46,10 @@ export const fetchPredictions = (limit = 10) =>
 export const fetchLatestPrediction = () =>
   client.get('/api/predictions/latest').then((r) => r.data);
 
+export const fetchPredictionEvaluation = (limit = 200) =>
+  client.get('/api/predictions/evaluation', { params: { limit } }).then((r) => r.data);
+
+export const fetchAlerts = (limit = 50) =>
+  client.get('/api/alerts', { params: { limit } }).then((r) => r.data);
+
 export default client;

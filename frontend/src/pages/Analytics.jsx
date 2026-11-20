@@ -75,7 +75,7 @@ export default function Analytics() {
       {/* Daily Revenue vs Orders */}
       <div className="charts-grid" style={{ gridTemplateColumns: '2fr 1fr', marginBottom: 24 }}>
         <div className="chart-card">
-          <div className="chart-title">Daily Revenue (Last 7 Days)</div>
+          <div className="chart-title" title="Revenue = total product cost (USD)">Daily Revenue (Last 7 Days)</div>
           <div className="chart-subtitle">Total product cost per day</div>
           <ResponsiveContainer width="100%" height={230}>
             <BarChart data={dailyChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -141,7 +141,7 @@ export default function Analytics() {
                   <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{d.day}</td>
                   <td style={{ color: 'var(--success)', fontWeight: 600 }}>{fmt(d.revenue)}</td>
                   <td>{d.orders.toLocaleString()}</td>
-                  <td>{d.rating.toFixed(2)} ⭐</td>
+                  <td>{d.rating.toFixed(2)} / 5</td>
                   <td>
                     <span className={d.onTime >= 70 ? 'badge badge-success' : 'badge badge-danger'}>
                       {d.onTime.toFixed(1)}%

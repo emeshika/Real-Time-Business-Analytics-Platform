@@ -1,117 +1,337 @@
-# PulseBI - Real-Time Business Intelligence & Analytics Platform
+# PulseBI - Real-Time Business Intelligence Platform
 
-PulseBI is an end-to-end Real-Time Business Intelligence (BI) and Analytics Platform designed to collect, process, analyze, and visualize live business data streams. The system processes incoming live transactions or operational data, runs predictive machine learning models for forecasting, and pushes instant updates to a dynamic dashboard using WebSockets—completely eliminating the need for page refreshes.
+PulseBI is a local real-time analytics dashboard with Kafka ingestion, MongoDB aggregation, XGBoost forecasting, FastAPI REST/WebSocket endpoints, and a React frontend.
 
----
+> **Honest data statement:** PulseBI uses a simulated real-time stream that replays the public Kaggle dataset **E-Commerce Shipping Data (Customer Analytics)**: <https://www.kaggle.com/datasets/prachi13/customer-analytics>. The CSV contains 10,999 rows and is replayed in a loop at 1 row per second. Historical hourly/daily data and initial prediction documents are backfilled with synthetic data by `backend/seed_db.py`.
 
-## Key Features
+## Architecture
 
-- **Live Data Streaming & Ingestion:** Scalable pipeline capable of handling continuous high-velocity business data streams.
-- **Real-Time Stream Processing:** Instant data cleaning, aggregation, and key metric computation as events occur.
-- **Predictive Analytics (ML):** Integrated time-series forecasting models to predict future trends and detect operational anomalies.
-- **Interactive Live Dashboard:** A modern, dynamic UI featuring auto-updating charts, live KPI cards, and instant system alerts.
-- **Strategic Decision Support:** Comprehensive view of live business health to aid immediate executive decision-making.
-
----
-
-## Tech Stack (Proposed)
-
-- **Frontend:** React.js, Tailwind CSS, Recharts / Chart.js, Socket.io-client
-- **Backend & APIs:** Python (FastAPI / Flask) OR Node.js (Express)
-- **Data Streaming:** Apache Kafka / RabbitMQ / Python Custom Stream Simulator
-- **Stream Processing:** Apache Spark / Pandas Stream Processor
-- **Machine Learning:** Python (Scikit-Learn, XGBoost, LSTM)
-- **Database:** MongoDB Atlas (NoSQL) OR PostgreSQL (Relational)
-
----
-
-## Repository Structure & Module Allocation
-
-The project is structured into clear modules to allow parallel development across 5 sub-teams (couples):
-
-```text
-pulse-bi-platform/
-├── backend/                  # Ingestion, Engine, ML, and API Layer
-│   ├── data_stream/          # [Couple 01 & 02] Data generation & Kafka pipelines
-│   ├── analytics_ml/         # [Couple 03] KPI calculation & Machine Learning forecasting
-│   └── api_server/           # [Couple 04] REST APIs & WebSockets Server
-└── frontend/                 # [Couple 05] Complete Live UI & BI Dashboard
+```mermaid
+flowchart LR
+    P[stream_generator.py] -->|CSV replay| KP[Kafka Producer]
+    KP -->|live-business-transactions| K[Kafka]
+    K -->|Kafka Consumer| C[Consumer and aggregations]
+    C --> M[(MongoDB)]
+    M -->|transactions| M
+    M -->|hourly_metrics| M
+    M -->|daily_metrics| M
+    M -->|predictions| M
+    M -->|alerts| M
+    M --> API[FastAPI REST + /ws/live]
+    API --> UI[React Dashboard]
 ```
 
----
+The producer sends JSON events from `backend/data/business_dataset.csv` to the `live-business-transactions` Kafka topic. The consumer cleans each event, stores raw transactions, and atomically updates hourly and daily MongoDB aggregates. FastAPI exposes REST endpoints and broadcasts MongoDB changes over `/ws/live`. The React dashboard polls REST endpoints and also receives WebSocket events.
 
-## Getting Started
+## Repository Structure
+
+```text
+Real-Time-Business-Analytics-Platform/
+├── backend/
+│   ├── kafka_producer.py
+│   ├── kafka_consumer.py
+│   ├── stream_generator.py
+│   ├── seed_db.py
+│   ├── database.py
+│   ├── kpi_calculator.py
+│   ├── data/
+│   │   └── business_dataset.csv
+│   ├── analytics_ml/
+│   │   ├── train_model.py
+│   │   ├── forecast_engine.py
+│   │   ├── metrics.py
+│   │   └── models/
+│   │       ├── sales_model.pkl
+│   │       └── metrics.json
+│   ├── api_server/
+│   │   ├── server.py
+│   │   ├── db.py
+│   │   └── routes/
+│   │       ├── historical.py
+│   │       ├── predictions.py
+│   │       └── alerts.py
+│   └── tests/
+├── frontend/
+│   ├── src/
+│   │   ├── pages/
+│   │   ├── components/
+│   │   └── services/
+│   └── package.json
+├── docker-compose.yml
+└── README.md
+```
+
+## Pages
+
+The React app has three routes:
+
+| Route | Page | Current behavior |
+|---|---|---|
+| `/` | Live Dashboard | KPI cards, revenue, shipment, warehouse, forecast, transaction table, live alerts |
+| `/analytics` | Analytics | Daily revenue, operations radar, hourly revenue/order trends, and historical tables |
+| `/predictions` | ML Predictions | Model/baseline metric cards, prediction chart/history, and prediction log |
+
+### Screenshots
+
+No screenshot files currently exist in `docs/screenshots/`. The repository therefore does not embed any screenshots. When captured, PNGs can be stored in `docs/screenshots/` and linked from this section.
+
+## Dataset
+
+- **Dataset:** E-Commerce Shipping Data (Customer Analytics)
+- **Source:** <https://www.kaggle.com/datasets/prachi13/customer-analytics>
+- **Local CSV:** `backend/data/business_dataset.csv`
+- **Rows:** 10,999 data rows plus one header
+- **Replay behavior:** `stream_generator.py` reads the CSV, yields each row as JSON, and repeats the loop with a 1-second delay
+- **Main columns:** `ID`, `Warehouse_block`, `Mode_of_Shipment`, `Customer_care_calls`, `Customer_rating`, `Cost_of_the_Product`, `Prior_purchases`, `Product_importance`, `Gender`, `Discount_offered`, `Weight_in_gms`, `Reached.on.Time_Y.N`
+
+The replay assigns the CSV `ID` value from the `ID` column. Only `timestamp` is generated for the live stream event.
+
+## Kafka, MongoDB, and Alerts
+
+- Kafka broker: `localhost:9092`
+- Kafka topic: `live-business-transactions`
+- Producer: `backend/kafka_producer.py`
+- Consumer: `backend/kafka_consumer.py`
+- MongoDB: `localhost:27017`
+- MongoDB database: `stream_analytics`
+- Collections:
+  - `transactions`
+  - `hourly_metrics`
+  - `daily_metrics`
+  - `predictions`
+  - `alerts`
+
+Hourly and daily metrics are created/updated in `backend/database.py` with MongoDB upserts. The Kafka consumer stores a `source: "stream"` field on streamed transactions and metric documents.
+
+Hourly operational alert rules in `backend/database.py` fire only once for a target hour/rule pair:
+
+- On-time delivery below 65%
+- Hourly revenue drop greater than 40% compared with the previous completed hour
+
+The frontend also keeps a separate prediction-spike rule: a prediction change greater than 25% from the previous prediction creates a `"Prediction spike"` alert.
+
+## XGBoost Forecasting
+
+The model predicts `total_cost` for the next hour.
+
+Features used:
+
+- `total_transactions`
+- `avg_discount`
+- `avg_rating`
+- `total_weight`
+- `hour`
+- `day_of_week`
+- `day_of_month`
+- `is_weekend`
+- `lag_1h`
+- `lag_2h`
+- `lag_3h`
+- `rolling_3h_mean`
+
+Training uses all available documents in `hourly_metrics`, sorted by timestamp, then uses an 80/20 time-ordered split without shuffling. The model is an `XGBRegressor` and is saved as `backend/analytics_ml/models/sales_model.pkl` together with its feature list.
+
+`backend/analytics_ml/train_model.py` writes `backend/analytics_ml/models/metrics.json`. The checked-in metrics were produced from 16 training rows and 5 test rows over the date range `2026-11-19T16:00:00` to `2026-11-20T12:00:00`:
+
+| Metric | XGBoost | Naive baseline (previous hour) |
+|---|---:|---:|
+| MAE | 3131.7446 | 6574.332 |
+| RMSE | 3833.5625 | 7072.8735 |
+| MAPE | 22.7035% | 57.7897% |
+| R2 | 0.1220 | Not calculated |
+
+The naive baseline predicts that next-hour revenue equals the previous completed hour's `total_cost`. Live matched metrics are available from `GET /api/predictions/evaluation`.
+
+## Technology Stack
+
+### Frontend
+
+| Library | Version |
+|---|---|
+| React | 18.2.0 |
+| React DOM | 18.2.0 |
+| React Router DOM | 7.17.0 |
+| Vite | 5.1.0 |
+| Recharts | 3.8.1 |
+| Axios | 1.17.0 |
+
+### Backend
+
+| Library | Pinned version |
+|---|---|
+| FastAPI | 0.165.0 |
+| Uvicorn | 0.54.0 |
+| PyMongo | 4.20.1 |
+| python-dotenv | 1.0.1 |
+| kafka-python-ng | 2.2.3 |
+| pandas | 3.1.1 |
+| NumPy | 2.5.5 |
+| XGBoost | 3.4.1 |
+| scikit-learn | 1.9.1 |
+| Joblib | 1.6.0 |
+| pytest | 9.2.0 |
+
+Docker Compose runs Apache Kafka and MongoDB 7.
+
+### API and WebSocket
+
+- REST API base URL: `http://localhost:8000`
+- WebSocket: `ws://localhost:8000/ws/live`
+- Historical endpoints: `/api/historical-data`, `/api/hourly-metrics`, `/api/daily-metrics`
+- Prediction endpoints: `/api/predictions/`, `/api/predictions/latest`, `/api/predictions/evaluation`
+- Alert endpoint: `/api/alerts`
+- Health endpoint: `/api/health`
+
+The exact default API port is 8000. If Windows blocks that port, Uvicorn can be started on another available port, for example 18080, and the frontend must receive matching `VITE_API_URL` and `VITE_WS_URL` environment variables.
+
+## Setup
 
 ### Prerequisites
 
-- **Python 3.9+**
-- **Apache Kafka** running locally on `localhost:9092`
-- **MongoDB** running locally on `localhost:27017`
+- Python 3.9 or newer
+- Node.js and npm
+- Docker Desktop or Docker Engine
 
-### 1. Clone the Repository
+### 1. Clone
 
 ```bash
-git clone https://github.com/your-org/stream-bi-analytics.git
-cd stream-bi-analytics
+git clone https://github.com/emeshika/Real-Time-Business-Analytics-Platform.git
+cd Real-Time-Business-Analytics-Platform
 ```
 
-### 2. Create a Virtual Environment
+### 2. Start Kafka and MongoDB
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+This starts Kafka on `9092` and MongoDB on `27017`.
+
+### 3. Configure the backend
 
 ```bash
 cd backend
 python -m venv venv
 ```
 
-Activate the virtual environment:
+Windows:
 
-- **Windows (PowerShell):**
-  ```bash
-  .\venv\Scripts\Activate.ps1
-  ```
-- **Windows (CMD):**
-  ```bash
-  venv\Scripts\activate.bat
-  ```
-- **macOS / Linux:**
-  ```bash
-  source venv/bin/activate
-  ```
-
-### 3. Install Dependencies
-
-```bash
+```powershell
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### 4. Configure Environment Variables (Optional)
+macOS/Linux:
 
 ```bash
+source venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env
-# Edit .env with your MongoDB URI, Kafka broker address, etc.
 ```
 
-### 5. Run the Pipeline
+### 4. Seed initial dashboard data
 
-Open **two separate terminals** (make sure the venv is activated in both):
+Run from `backend/`:
 
-**Terminal 1 — Start the Kafka Producer:**
+```bash
+python seed_db.py
+```
+
+This creates synthetic transactions, 24 hourly documents, 7 daily documents, and initial prediction documents.
+
+### 5. Train the model
+
+```bash
+python analytics_ml/train_model.py
+```
+
+This requires MongoDB and non-empty `hourly_metrics`, and writes both `analytics_ml/models/sales_model.pkl` and `analytics_ml/models/metrics.json`.
+
+### 6. Start the Kafka pipeline
+
+Terminal 1:
+
 ```bash
 cd backend
 python kafka_producer.py
 ```
 
-**Terminal 2 — Start the Kafka Consumer:**
+Terminal 2:
+
 ```bash
 cd backend
 python kafka_consumer.py
 ```
 
-### 6. Verify in MongoDB
+The producer continuously sends CSV rows. The consumer stores raw events and updates hourly/daily aggregates.
 
-Open **MongoDB Compass** and connect to `mongodb://localhost:27017`. Navigate to the `stream_analytics` database and verify that the following collections are continuously growing with live data:
+### 7. Start prediction generation
 
-| Collection | Description |
+In an additional backend terminal:
+
+```bash
+cd backend
+python analytics_ml/forecast_engine.py
+```
+
+It loads `sales_model.pkl` and writes one forecast to MongoDB every 30 seconds.
+
+### 8. Start the API
+
+```bash
+cd backend
+uvicorn api_server.server:app --reload --host 0.0.0.0 --port 8000
+```
+
+Health check:
+
+```text
+http://localhost:8000/api/health
+```
+
+### 9. Start the React dashboard
+
+In a separate terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL shown in the terminal, normally:
+
+```text
+http://localhost:5173
+```
+
+### 10. Run tests
+
+```bash
+cd backend
+python -m pytest tests -q
+```
+
+## Team and Module Allocation
+
+Team lead: **Hirushi Emeshika**
+
+| Module | Allocation |
 |---|---|
-| `transactions` | Raw, cleaned streaming events |
-| `hourly_metrics` | Aggregated summary data per hour |
-| `daily_metrics` | Aggregated summary data per day |
+| Data generation and stream replay | Data Streaming Couple 01 |
+| Kafka producer/consumer pipeline | Data Streaming Couple 02 |
+| KPI calculation and ML forecasting | Analytics/ML Couple 03 |
+| FastAPI REST and WebSocket server | API Server Couple 04 |
+| React dashboard | Frontend Couple 05 |
+
+## Limitations
+
+- The public Kaggle shipping CSV is not an hourly time-series dataset. PulseBI adds live timestamps while replaying it.
+- Live replay timestamps, seeded hourly timestamps, and seeded prediction timestamps determine the chart timeline.
+- `forecast_engine.py` predicts `total_cost` from hourly aggregates, but the dataset and seed history are limited for a strong forecasting evaluation.
+- Metrics are compared against a simple previous-hour naive baseline.
+- Backend operational alerts are rule-based and are not a full anomaly detection platform.
+- MongoDB seed data is synthetic and can replace existing seeded collections.
+- No automated browser test suite or screenshot set is currently stored in the repository.

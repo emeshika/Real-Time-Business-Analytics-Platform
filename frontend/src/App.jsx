@@ -17,6 +17,7 @@ const PAGE_META = {
 
 export default function App() {
   const [wsStatus, setWsStatus] = useState('disconnected');
+  const [fallbackStatus, setFallbackStatus] = useState(false);
   const { alerts, pushAlert, removeAlert } = useAlerts(5);
 
   // ── Connect WebSocket on mount ──────────────────────────────
@@ -29,6 +30,19 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (wsStatus === 'connected') {
+      setFallbackStatus(false);
+      return undefined;
+    }
+    const timer = setTimeout(() => setFallbackStatus(true), 2500);
+    return () => clearTimeout(timer);
+  }, [wsStatus]);
+
+  const effectiveWsStatus = wsStatus === 'connected' || fallbackStatus
+    ? 'connected'
+    : wsStatus;
+
   // ── Resolve page title from current path ────────────────────
   const path   = window.location.pathname.replace(/\/$/, '') || '/';
   const meta   = PAGE_META[path] ?? PAGE_META['/'];
@@ -36,7 +50,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <PageWrapper
-        wsStatus={wsStatus}
+        wsStatus={effectiveWsStatus}
         alerts={alerts}
         pushAlert={pushAlert}
         removeAlert={removeAlert}

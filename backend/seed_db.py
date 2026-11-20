@@ -73,6 +73,7 @@ for i in range(500):
 
     transactions.append({
         "id": 10000 + i,
+        "source": "seed",
         "warehouse_block": block,
         "mode_of_shipment": mode,
         "customer_care_calls": randi(1, 7),
@@ -115,6 +116,7 @@ for h in range(24):
 
     hourly_docs.append({
         "hour_start":          hour_ts,
+        "source":              "seed",
         "total_transactions":  txns,
         "total_cost":          total_cost,
         "discount_sum":        disc_sum,
@@ -149,6 +151,7 @@ for d in range(7):
 
     daily_docs.append({
         "date_start":          day_ts,
+        "source":              "seed",
         "total_transactions":  txns,
         "total_cost":          total_cost,
         "discount_sum":        disc_sum,
@@ -181,6 +184,8 @@ for p in range(10):
         "predicted_total_cost_next_hour": cost,
         "prediction_time":  pred_ts,
         "based_on_latest_hour": (pred_ts - timedelta(hours=1)).isoformat(),
+        "target_hour": (pred_ts + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0).isoformat(),
+        "source": "seed",
         "records_used":    randi(6, 10),
         "model_version":   "xgboost_v1",
         "status":          "ok",

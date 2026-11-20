@@ -29,6 +29,8 @@ from database import (
     get_collections,
     update_daily_metrics,
     update_hourly_metrics,
+    build_metric_delta,
+    create_hourly_alerts,
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -75,6 +77,11 @@ log.info("-" * 60)
 
 try:
     db_client, transactions_col, hourly_col, daily_col = get_collections()
+    alerts_col = db_client[os.getenv("MONGODB_DATABASE", "stream_analytics")][
+        os.getenv("MONGODB_ALERTS_COLLECTION", "alerts")
+    ]
+    alerts_col.create_index("created_at")
+    alerts_col.create_index([("target_hour", 1), ("rule", 1)], unique=True)
     db_client.admin.command("ping")
     ensure_indexes(transactions_col, hourly_col, daily_col)
     log.info("Connected to MongoDB ✓")
@@ -210,6 +217,7 @@ try:
         cleaned_data["hour_start"] = hour_start
         cleaned_data["date_start"] = date_start
         cleaned_data["processed_at"] = datetime.now(timezone.utc)
+        cleaned_data["source"] = "stream"
 
         # ── Store raw transaction ─────────────────────────────────────────
         try:
@@ -219,11 +227,12 @@ try:
             continue  # skip aggregation if the raw write fails
 
         # ── Update hourly & daily aggregations ────────────────────────────
-        metrics_delta = build_metrics_delta(cleaned_data)
+        metrics_delta = build_metric_delta(cleaned_data)
 
         try:
-            update_hourly_metrics(hourly_col, hour_start, metrics_delta)
+            hourly_doc = update_hourly_metrics(hourly_col, hour_start, metrics_delta)
             update_daily_metrics(daily_col, date_start, metrics_delta)
+            create_hourly_alerts(alerts_col, hourly_col, hour_start, hourly_doc)
         except PyMongoError as exc:
             log.error("Failed to update metrics: %s", exc)
 

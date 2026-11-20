@@ -34,6 +34,7 @@ DEFAULT_TRANSACTIONS_COLLECTION = "transactions"
 DEFAULT_HOURLY_COLLECTION = "hourly_metrics"
 DEFAULT_DAILY_COLLECTION = "daily_metrics"
 DEFAULT_PREDICTIONS_COLLECTION = "predictions"
+DEFAULT_ALERTS_COLLECTION = "alerts"
 
 
 # ── Singleton-style connection ────────────────────────────────────────────────
@@ -77,6 +78,12 @@ def get_daily_col():
 def get_predictions_col():
     """Return the predictions collection (Team 03's ML output)."""
     name = os.getenv("MONGODB_PREDICTIONS_COLLECTION", DEFAULT_PREDICTIONS_COLLECTION)
+    return get_database()[name]
+
+
+def get_alerts_col():
+    """Return the operational alerts collection."""
+    name = os.getenv("MONGODB_ALERTS_COLLECTION", DEFAULT_ALERTS_COLLECTION)
     return get_database()[name]
 
 

@@ -41,20 +41,27 @@ export default function Dashboard({ wsStatus, pushAlert }) {
       const h = hourlyRes.data?.length ? hourlyRes.data : generateHourlyMetrics(24);
       const t = txRes.data?.length     ? txRes.data     : generateTransactions(20);
       const p = predRes.predictions?.length ? predRes.predictions : generatePredictions(8);
+      const nextKpis = computeKPIs(h);
+      setPrevKpis((current) => current ?? kpis);
       setHourlyData(h);
       setTransactions(t);
       setPredictions(p);
-      setPrevKpis(kpis);
-      setKpis(computeKPIs(h));
+      setKpis((current) => {
+        setPrevKpis(current);
+        return nextKpis;
+      });
     } catch {
-      // Backend offline → use dummy data
+      // Use resilient sample data when the REST service is unavailable
       const h = generateHourlyMetrics(24);
       const t = generateTransactions(20);
       const p = generatePredictions(8);
       setHourlyData(h);
       setTransactions(t);
       setPredictions(p);
-      setKpis(computeKPIs(h));
+      setKpis((current) => {
+        setPrevKpis(current);
+        return computeKPIs(h);
+      });
     } finally {
       setLoading(false);
     }
@@ -97,7 +104,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
           if (Math.abs(pct) > 25) {
             pushAlert({
               type: 'anomaly',
-              title: `Revenue Anomaly: ${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`,
+              title: `Prediction spike: ${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`,
               message: `Predicted cost next hour: ${fmt(cost)}. Significant deviation detected.`,
             });
           } else {
@@ -122,7 +129,10 @@ export default function Dashboard({ wsStatus, pushAlert }) {
 
   // ── KPI change helpers ──────────────────────────────────────
   const kpiChange = (curr, prev, prefix = '$') => {
-    if (!prev || prev === 0) return { text: '—', dir: 'neutral' };
+    if (prev === null || prev === undefined) {
+      return { text: '0.0%', dir: 'neutral' };
+    }
+    if (prev === 0) return { text: curr === 0 ? '0.0%' : '+100.0%', dir: curr >= 0 ? 'up' : 'down' };
     const pct = ((curr - prev) / Math.abs(prev)) * 100;
     return { text: `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`, dir: pct > 0 ? 'up' : 'down' };
   };
@@ -157,7 +167,6 @@ export default function Dashboard({ wsStatus, pushAlert }) {
           value={fmt(kpis.totalRevenue)}
           change={revChange.text}
           changeDir={revChange.dir}
-          icon="💰"
           accentColor="var(--primary)"
           iconBg="rgba(99,102,241,0.15)"
         />
@@ -166,16 +175,14 @@ export default function Dashboard({ wsStatus, pushAlert }) {
           value={kpis.totalOrders.toLocaleString()}
           change={ordChange.text}
           changeDir={ordChange.dir}
-          icon="📦"
           accentColor="var(--accent)"
           iconBg="rgba(34,211,238,0.15)"
         />
         <KpiCard
           label="Avg Customer Rating"
-          value={`${kpis.avgRating.toFixed(2)} ⭐`}
+          value={kpis.avgRating.toFixed(2)}
           change={ratChange.text}
           changeDir={ratChange.dir}
-          icon="⭐"
           accentColor="var(--warning)"
           iconBg="rgba(245,158,11,0.15)"
         />
@@ -184,7 +191,6 @@ export default function Dashboard({ wsStatus, pushAlert }) {
           value={`${kpis.onTimeRate.toFixed(1)}%`}
           change={ottChange.text}
           changeDir={ottChange.dir}
-          icon="🚚"
           accentColor="var(--success)"
           iconBg="rgba(16,185,129,0.15)"
         />
@@ -194,7 +200,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
       <div className="charts-grid">
         {/* Revenue trend */}
         <div className="chart-card">
-          <div className="chart-title">Revenue Trend — Last 24 Hours</div>
+          <div className="chart-title" title="Revenue = total product cost (USD)">Revenue Trend — Last 24 Hours</div>
           <div className="chart-subtitle">Hourly total product cost (USD)</div>
           <RevenueLineChart data={hourlyData} />
         </div>
@@ -211,15 +217,11 @@ export default function Dashboard({ wsStatus, pushAlert }) {
       <div className="charts-grid">
         {/* ML Forecast */}
         <div className="chart-card">
-          <div className="chart-title">
-            Revenue Forecast&nbsp;
-            <span className="badge badge-info" style={{ fontSize: 10, verticalAlign: 'middle' }}>
-              XGBoost v1
-            </span>
-          </div>
+          <div className="chart-title" title="Revenue = total product cost (USD)">Revenue Forecast</div>
           <div className="chart-subtitle">
-            <span style={{ color: '#22d3ee' }}>━</span> Actual &nbsp;
-            <span style={{ color: '#6366f1' }}>╌</span> Predicted
+            <span style={{ color: '#22d3ee' }}>Actual</span>
+            <span style={{ color: 'var(--text-muted)' }}> / </span>
+            <span style={{ color: '#6366f1' }}>Predicted</span>
           </div>
           <ForecastChart hourlyData={hourlyData} predictions={predictions} />
         </div>
@@ -277,7 +279,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
                     ${tx.cost_of_product?.toFixed(2) ?? '—'}
                   </td>
                   <td style={{ color: 'var(--warning)' }}>{tx.discount_offered?.toFixed(1)}%</td>
-                  <td>{'⭐'.repeat(Math.min(tx.customer_rating || 0, 5))}</td>
+                  <td>{(tx.customer_rating || 0).toFixed ? `${tx.customer_rating.toFixed(1)} / 5` : `${tx.customer_rating || 0} / 5`}</td>
                   <td>
                     {tx.reached_on_time === 1
                       ? <span className="badge badge-success">Yes</span>
@@ -299,6 +301,10 @@ export default function Dashboard({ wsStatus, pushAlert }) {
           </table>
         </div>
       </div>
+      <footer className="dashboard-footer">
+        Simulated real-time stream replaying a public Kaggle e-commerce shipping dataset (10,999 rows).
+        Historical data is backfilled with synthetic seed data.
+      </footer>
     </div>
   );
 }

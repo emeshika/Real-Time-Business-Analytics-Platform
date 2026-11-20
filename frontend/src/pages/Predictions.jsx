@@ -3,7 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { fetchPredictions, fetchLatestPrediction } from '../services/api';
+import { fetchPredictions, fetchLatestPrediction, fetchPredictionEvaluation } from '../services/api';
 import { generatePredictions } from '../services/dummyData';
 
 const fmt = (v) =>
@@ -22,17 +22,20 @@ export default function Predictions() {
   const [predictions, setPredictions] = useState([]);
   const [latest, setLatest]           = useState(null);
   const [loading, setLoading]         = useState(true);
+  const [evaluation, setEvaluation]   = useState(null);
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [predsRes, latestRes] = await Promise.all([
+        const [predsRes, latestRes, evalRes] = await Promise.all([
           fetchPredictions(20),
           fetchLatestPrediction(),
+          fetchPredictionEvaluation(200),
         ]);
         const preds = predsRes.predictions?.length ? predsRes.predictions : generatePredictions(12);
         setPredictions(preds);
         setLatest(latestRes.prediction ?? preds[0] ?? null);
+        setEvaluation(evalRes);
       } catch {
         const preds = generatePredictions(12);
         setPredictions(preds);
@@ -62,6 +65,10 @@ export default function Predictions() {
       cost: p.predicted_total_cost_next_hour || 0,
     }));
 
+  const evaluatedMap = new Map(
+    (evaluation?.live_metrics?.evaluated || []).map((item) => [item.target_hour, item])
+  );
+
   if (loading) return (
     <div className="page-content">
       <div style={{ color: 'var(--text-secondary)', padding: 40, textAlign: 'center' }}>
@@ -78,9 +85,45 @@ export default function Predictions() {
           <div className="section-desc">XGBoost time-series revenue forecast</div>
         </div>
         <span className="badge badge-info" style={{ fontSize: 12, padding: '6px 14px' }}>
-          🤖 Model: xgboost_v1
+          Model: XGBoost v1
         </span>
       </div>
+
+      {evaluation && (
+        <div className="evaluation-grid">
+          {[
+            ['MAE', 'mae', (v) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`],
+            ['RMSE', 'rmse', (v) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`],
+            ['MAPE', 'mape', (v) => `${Number(v).toFixed(2)}%`],
+          ].map(([title, key, formatter]) => (
+            <div className="evaluation-card" key={key}>
+              <div className="evaluation-card-title">{title}</div>
+              <div className="evaluation-values">
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>Model</div>
+                  <strong>
+                    {evaluation.live_metrics?.model?.[key] == null
+                      ? 'pending'
+                      : formatter(evaluation.live_metrics.model[key])}
+                  </strong>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>Naive baseline</div>
+                  <strong>
+                    {evaluation.live_metrics?.naive_baseline?.[key] == null
+                      ? 'pending'
+                      : formatter(evaluation.live_metrics.naive_baseline[key])}
+                  </strong>
+                </div>
+              </div>
+              <div className="evaluation-source">
+                {evaluation.live_metrics?.evaluated_predictions ?? 0} predictions evaluated
+                {' · '}{(evaluation.live_metrics?.sources || ['unknown']).join(', ') || 'unknown'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Latest prediction hero card */}
       {latest && (
@@ -92,7 +135,7 @@ export default function Predictions() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16 }}>
             <div>
               <div style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 4 }}>
-                🤖 LATEST PREDICTION
+                Latest Prediction
               </div>
               <div style={{ fontSize: 42, fontWeight: 800, color: 'var(--primary-light)', letterSpacing: '-0.03em' }}>
                 {fmt(latest.predicted_total_cost_next_hour || 0)}
@@ -124,7 +167,7 @@ export default function Predictions() {
       {/* Prediction trend chart */}
       <div className="chart-card" style={{ marginBottom: 24 }}>
         <div className="chart-title">Prediction History</div>
-        <div className="chart-subtitle">Predicted next-hour revenue over time</div>
+        <div className="chart-subtitle" title="Revenue = total product cost (USD)">Predicted next-hour revenue over time</div>
         <ResponsiveContainer width="100%" height={250}>
           <AreaChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <defs>
@@ -176,10 +219,26 @@ export default function Predictions() {
                 <th>Records Used</th>
                 <th>Model</th>
                 <th>Status</th>
+                <th>Actual Revenue</th>
+                <th>Error (%)</th>
               </tr>
             </thead>
             <tbody>
-              {predictions.map((p, idx) => (
+              {predictions.map((p, idx) => {
+                let target = null;
+                if (p.target_hour) {
+                  target = new Date(p.target_hour);
+                } else if (p.based_on_latest_hour) {
+                  target = new Date(new Date(p.based_on_latest_hour).getTime() + 60 * 60 * 1000);
+                } else if (p.prediction_time) {
+                  target = new Date(new Date(p.prediction_time).getTime() + 60 * 60 * 1000);
+                }
+                if (target) target.setUTCMinutes(0, 0, 0);
+                const result = target ? evaluatedMap.get(target.toISOString()) : null;
+                const error = result && result.actual_revenue
+                  ? Math.abs(result.model_predicted - result.actual_revenue) / result.actual_revenue * 100
+                  : null;
+                return (
                 <tr key={idx}>
                   <td style={{ color: 'var(--text-muted)' }}>{idx + 1}</td>
                   <td style={{ color: 'var(--primary-light)', fontWeight: 700, fontSize: 15 }}>
@@ -196,8 +255,11 @@ export default function Predictions() {
                       {p.status ?? '—'}
                     </span>
                   </td>
+                  <td>{result ? fmt(result.actual_revenue) : 'pending'}</td>
+                  <td>{error == null ? 'pending' : `${error.toFixed(2)}%`}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

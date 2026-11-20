@@ -13,7 +13,7 @@ import pandas as pd
 from pymongo import MongoClient
 from dotenv import load_dotenv
 import joblib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 load_dotenv()
 
@@ -168,6 +168,8 @@ while True:
                     "predicted_total_cost_next_hour" : round(predicted_cost, 2),
                     "prediction_time"                : datetime.now(timezone.utc).isoformat(),
                     "based_on_latest_hour"           : str(latest_doc.get("hour_start", "unknown")),
+                    "target_hour"                    : (pd.to_datetime(latest_doc.get("hour_start")) + timedelta(hours=1)).isoformat(),
+                    "source"                         : "stream",
                     "records_used"                   : len(docs),
                     "model_version"                  : "xgboost_v1",
                     "status"                         : "ok",

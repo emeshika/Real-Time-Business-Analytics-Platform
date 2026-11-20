@@ -15,12 +15,117 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Query
+from datetime import datetime, timedelta, timezone
+import json
+import os
 
-from api_server.db import get_predictions_col, serialise_doc
+from api_server.db import get_predictions_col, get_hourly_col, serialise_doc
+from analytics_ml.metrics import (
+    mean_absolute_error,
+    root_mean_squared_error,
+    mean_absolute_percentage_error,
+)
 
 log = logging.getLogger("pulsebi.predictions")
 
 router = APIRouter(prefix="/api/predictions", tags=["ML Predictions"])
+
+
+def _parse_datetime(value):
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc)
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _target_hour(prediction):
+    target = _parse_datetime(prediction.get("target_hour"))
+    if target:
+        return target.replace(minute=0, second=0, microsecond=0)
+    based_on = _parse_datetime(prediction.get("based_on_latest_hour"))
+    if based_on:
+        return (based_on + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    prediction_time = _parse_datetime(prediction.get("prediction_time"))
+    if prediction_time:
+        return (prediction_time + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return None
+
+
+@router.get("/evaluation")
+def get_prediction_evaluation(limit: int = Query(default=200, ge=1, le=1000)):
+    """Return saved model metrics and live matched prediction metrics."""
+    metrics_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "analytics_ml", "models", "metrics.json",
+    )
+    try:
+        with open(metrics_path, "r", encoding="utf-8") as metrics_file:
+            saved_metrics = json.load(metrics_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        saved_metrics = None
+
+    now = datetime.now(timezone.utc)
+    predictions_cursor = (
+        get_predictions_col()
+        .find({}, {"_id": 0})
+        .sort("prediction_time", -1)
+        .limit(limit)
+    )
+    predictions = [serialise_doc(dict(doc)) for doc in predictions_cursor]
+
+    model_actual = []
+    model_predicted = []
+    naive_actual = []
+    naive_predicted = []
+    evaluated = []
+    sources = set()
+
+    for prediction in predictions:
+        target = _target_hour(prediction)
+        if not target or target >= now.replace(minute=0, second=0, microsecond=0):
+            continue
+        actual_doc = get_hourly_col().find_one({"hour_start": target})
+        if not actual_doc:
+            continue
+
+        actual = float(actual_doc.get("total_cost", 0.0) or 0.0)
+        predicted = float(prediction.get("predicted_total_cost_next_hour", 0.0) or 0.0)
+        previous = get_hourly_col().find_one({"hour_start": target - timedelta(hours=1)})
+        naive = float(previous.get("total_cost", 0.0) or 0.0) if previous else None
+
+        model_actual.append(actual)
+        model_predicted.append(predicted)
+        if naive is not None:
+            naive_actual.append(actual)
+            naive_predicted.append(naive)
+        sources.add(prediction.get("source") or "seed")
+        evaluated.append({
+            "target_hour": target.isoformat(),
+            "actual_revenue": actual,
+            "model_predicted": predicted,
+            "naive_predicted": naive,
+        })
+
+    live_metrics = {
+        "evaluated_predictions": len(evaluated),
+        "sources": sorted(sources),
+        "model": {
+            "mae": mean_absolute_error(model_actual, model_predicted),
+            "rmse": root_mean_squared_error(model_actual, model_predicted),
+            "mape": mean_absolute_percentage_error(model_actual, model_predicted),
+        },
+        "naive_baseline": {
+            "mae": mean_absolute_error(naive_actual, naive_predicted),
+            "rmse": root_mean_squared_error(naive_actual, naive_predicted),
+            "mape": mean_absolute_percentage_error(naive_actual, naive_predicted),
+        },
+        "evaluated": evaluated,
+    }
+    return {"saved_metrics": saved_metrics, "live_metrics": live_metrics}
 
 # ── GET /api/predictions ──────────────────────────────────────────────────────
 

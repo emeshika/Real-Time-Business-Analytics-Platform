@@ -10,16 +10,13 @@ import { useState, useEffect, useRef } from 'react';
  *   value      — string  formatted value e.g. "$142,830"
  *   change     — string  e.g. "+12.4%"
  *   changeDir  — 'up' | 'down' | 'neutral'
- *   icon       — emoji
  *   accentColor— CSS color string
- *   iconBg     — CSS color string for icon background
  */
 export default function KpiCard({
   label,
   value,
   change,
   changeDir = 'neutral',
-  icon = '📊',
   accentColor = 'var(--primary)',
   iconBg = 'rgba(99,102,241,0.15)',
 }) {
@@ -35,8 +32,6 @@ export default function KpiCard({
     }
   }, [value]);
 
-  const arrow = changeDir === 'up' ? '↑' : changeDir === 'down' ? '↓' : '→';
-
   return (
     <div className="kpi-card">
       {/* Top accent bar */}
@@ -44,11 +39,6 @@ export default function KpiCard({
         className="accent-bar"
         style={{ background: `linear-gradient(90deg, ${accentColor}, transparent)` }}
       />
-
-      {/* Icon */}
-      <div className="icon-wrap" style={{ background: iconBg }}>
-        {icon}
-      </div>
 
       {/* Label */}
       <div className="kpi-label">{label}</div>
@@ -59,7 +49,6 @@ export default function KpiCard({
       {/* Change indicator */}
       {change && (
         <div className={`kpi-change ${changeDir}`}>
-          <span>{arrow}</span>
           <span>{change}</span>
           <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
             {' '}vs last period

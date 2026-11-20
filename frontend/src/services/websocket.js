@@ -77,7 +77,7 @@ class WebSocketService {
     }
 
     this._ws.onopen = () => {
-      console.info('[PulseBI WS] Connected ✅');
+      console.info('[PulseBI WS] Connected');
       this._retryCount = 0;
       this._setStatus('connected');
     };

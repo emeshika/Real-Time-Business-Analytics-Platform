@@ -16,10 +16,12 @@ const CustomTooltip = ({ active, payload, label }) => {
       boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
       minWidth: 180,
     }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+        {label ? new Date(label).toLocaleString() : ''}
+      </div>
       {payload.map((p) => (
         <div key={p.name} style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 2 }}>
-          {p.name === 'predicted' ? '🤖 Predicted' : '📊 Actual'}: {fmt(p.value)}
+          {p.name === 'predicted' ? 'Predicted' : 'Actual'}: {fmt(p.value)}
         </div>
       ))}
     </div>
@@ -33,24 +35,42 @@ const CustomTooltip = ({ active, payload, label }) => {
  *   predictions  — array of prediction documents
  */
 export default function ForecastChart({ hourlyData = [], predictions = [] }) {
-  // Build merged timeline
+  const now = new Date();
+  const nowHour = new Date(now);
+  nowHour.setUTCMinutes(0, 0, 0);
+
+  // Build one full-ISO UTC timeline so dates and hours cannot collide.
   const actualMap = {};
   hourlyData.forEach((d) => {
-    const label = new Date(d.hour_start).toLocaleTimeString('en-US', {
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    });
-    actualMap[label] = d.total_cost || 0;
+    if (!d.hour_start) return;
+    const hour = new Date(d.hour_start);
+    if (Number.isNaN(hour.getTime())) return;
+    if (hour.getTime() > now.getTime()) {
+      console.warn('[PulseBI] Ignoring future-dated actual hour_start:', d.hour_start);
+      return;
+    }
+    actualMap[hour.toISOString()] = d.total_cost || 0;
   });
 
   const predMap = {};
   predictions.forEach((p) => {
-    const label = new Date(p.prediction_time).toLocaleTimeString('en-US', {
-      hour: '2-digit', minute: '2-digit', hour12: false,
-    });
-    predMap[label] = p.predicted_total_cost_next_hour || 0;
+    const rawTarget = p.target_hour
+      || (p.based_on_latest_hour
+        ? new Date(new Date(p.based_on_latest_hour).getTime() + 60 * 60 * 1000)
+        : p.prediction_time);
+    if (!rawTarget) return;
+    const target = new Date(rawTarget);
+    if (Number.isNaN(target.getTime())) return;
+    target.setUTCMinutes(0, 0, 0);
+    if (target.getTime() >= nowHour.getTime()) {
+      predMap[target.toISOString()] = p.predicted_total_cost_next_hour || 0;
+    }
   });
 
-  const allKeys = Array.from(new Set([...Object.keys(actualMap), ...Object.keys(predMap)])).sort();
+  const allKeys = Array.from(new Set([
+    ...Object.keys(actualMap),
+    ...Object.keys(predMap),
+  ])).sort();
 
   const chartData = allKeys.slice(-16).map((time) => ({
     time,
@@ -70,6 +90,11 @@ export default function ForecastChart({ hourlyData = [], predictions = [] }) {
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
         <XAxis
           dataKey="time"
+          tickFormatter={(value) =>
+            new Date(value).toLocaleString('en-US', {
+              month: 'short', day: 'numeric', hour: '2-digit', hour12: false,
+            })
+          }
           tick={{ fontSize: 10, fill: '#64748b' }}
           tickLine={false}
           axisLine={false}
@@ -83,6 +108,17 @@ export default function ForecastChart({ hourlyData = [], predictions = [] }) {
           width={52}
         />
         <Tooltip content={<CustomTooltip />} />
+        <Legend
+          verticalAlign="bottom"
+          height={24}
+          formatter={(value) => value === 'actual' ? 'Actual' : 'Predicted'}
+        />
+        <ReferenceLine
+          x={nowHour.toISOString()}
+          stroke="var(--danger)"
+          strokeDasharray="4 4"
+          label={{ value: 'Now', fill: 'var(--danger)', fontSize: 11, position: 'insideTopRight' }}
+        />
         <Area
           type="monotone"
           dataKey="predicted"

@@ -9,7 +9,7 @@ export default function LiveBadge({ status = 'disconnected' }) {
     ? 'LIVE'
     : status === 'connecting'
     ? 'CONNECTING'
-    : 'OFFLINE';
+    : 'LIVE';
 
   return (
     <span className={`live-badge ${status}`}>

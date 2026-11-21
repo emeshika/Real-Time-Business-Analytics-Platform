@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { fetchPredictions, fetchLatestPrediction, fetchPredictionEvaluation } from '../services/api';
 import { generatePredictions } from '../services/dummyData';
+import { browserTimezoneLabel, formatBrowserDateTime, formatBrowserHour } from '../utils/dateTime';
 
 const fmt = (v) =>
   v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(2)}M` :
@@ -58,15 +59,15 @@ export default function Predictions() {
   const chartData = predictions
     .slice().sort((a, b) => new Date(a.prediction_time) - new Date(b.prediction_time))
     .map((p) => ({
-      time: new Date(p.prediction_time).toLocaleString('en-US', {
-        month: 'short', day: 'numeric',
-        hour: '2-digit', minute: '2-digit', hour12: false,
-      }),
+      time: p.prediction_time,
       cost: p.predicted_total_cost_next_hour || 0,
     }));
 
   const evaluatedMap = new Map(
-    (evaluation?.live_metrics?.evaluated || []).map((item) => [item.target_hour, item])
+    [
+      ...(evaluation?.backtest?.evaluated || []),
+      ...(evaluation?.stream?.evaluated || []),
+    ].map((item) => [item.target_hour, item])
   );
 
   if (loading) return (
@@ -92,34 +93,36 @@ export default function Predictions() {
       {evaluation && (
         <div className="evaluation-grid">
           {[
-            ['MAE', 'mae', (v) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`],
-            ['RMSE', 'rmse', (v) => `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`],
-            ['MAPE', 'mape', (v) => `${Number(v).toFixed(2)}%`],
-          ].map(([title, key, formatter]) => (
-            <div className="evaluation-card" key={key}>
+            ['Offline test', evaluation.offline_test?.metrics?.model, evaluation.offline_test?.metrics?.naive_baseline,
+              `n=${(evaluation.offline_test?.test_size ?? 0)}, ${(evaluation.offline_test?.test_size ?? 0) < 20 ? 'too few to conclude' : 'test-set metrics'}`],
+            ['Backtest', evaluation.backtest?.model, evaluation.backtest?.naive_baseline,
+              evaluation.backtest?.label || 'n=0, too few to conclude'],
+            ['Stream', evaluation.stream?.model, evaluation.stream?.naive_baseline,
+              evaluation.stream?.label || 'n=0, too few to conclude'],
+          ].map(([title, model, baseline, label]) => (
+            <div className="evaluation-card" key={title}>
               <div className="evaluation-card-title">{title}</div>
-              <div className="evaluation-values">
-                <div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>Model</div>
-                  <strong>
-                    {evaluation.live_metrics?.model?.[key] == null
-                      ? 'pending'
-                      : formatter(evaluation.live_metrics.model[key])}
-                  </strong>
+              {['mae', 'rmse', 'mape'].map((key) => (
+                <div className="evaluation-values" key={key} style={{ marginBottom: 8 }}>
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                      {key.toUpperCase()} - Model
+                    </div>
+                    <strong>{model?.[key] == null ? '—' : key === 'mape'
+                      ? `${Number(model[key]).toFixed(2)}%`
+                      : `$${Number(model[key]).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</strong>
+                  </div>
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                      {key.toUpperCase()} - Naive
+                    </div>
+                    <strong>{baseline?.[key] == null ? '—' : key === 'mape'
+                      ? `${Number(baseline[key]).toFixed(2)}%`
+                      : `$${Number(baseline[key]).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</strong>
+                  </div>
                 </div>
-                <div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>Naive baseline</div>
-                  <strong>
-                    {evaluation.live_metrics?.naive_baseline?.[key] == null
-                      ? 'pending'
-                      : formatter(evaluation.live_metrics.naive_baseline[key])}
-                  </strong>
-                </div>
-              </div>
-              <div className="evaluation-source">
-                {evaluation.live_metrics?.evaluated_predictions ?? 0} predictions evaluated
-                {' · '}{(evaluation.live_metrics?.sources || ['unknown']).join(', ') || 'unknown'}
-              </div>
+              ))}
+              <div className="evaluation-source">{label}</div>
             </div>
           ))}
         </div>
@@ -145,15 +148,22 @@ export default function Predictions() {
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Generated at</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>
+                Generated at ({browserTimezoneLabel()})
+              </div>
               <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
                 {latest.prediction_time
-                  ? new Date(latest.prediction_time).toLocaleString()
+                  ? formatBrowserDateTime(latest.prediction_time)
                   : '—'}
               </div>
               <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
                 Based on {latest.records_used ?? '?'} records
               </div>
+              {latest.based_on_latest_hour && (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Based on hour: {formatBrowserHour(latest.based_on_latest_hour)} ({browserTimezoneLabel()})
+                </div>
+              )}
               <div style={{ marginTop: 8 }}>
                 <span className={`badge ${latest.status === 'ok' ? 'badge-success' : 'badge-danger'}`}>
                   {latest.status ?? 'unknown'}
@@ -179,9 +189,11 @@ export default function Predictions() {
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
             <XAxis
               dataKey="time"
+              tickFormatter={(value) => formatBrowserDateTime(value)}
               tick={{ fontSize: 10, fill: '#64748b' }}
               tickLine={false} axisLine={false}
               interval="preserveStartEnd"
+              label={{ value: `Browser local (${browserTimezoneLabel()})`, position: 'insideBottom', offset: -5 }}
             />
             <YAxis
               tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
@@ -214,8 +226,8 @@ export default function Predictions() {
               <tr>
                 <th>#</th>
                 <th>Predicted Revenue (next hr)</th>
-                <th>Generated At</th>
-                <th>Based On Hour</th>
+                <th>Generated At ({browserTimezoneLabel()})</th>
+                <th>Based On Hour ({browserTimezoneLabel()})</th>
                 <th>Records Used</th>
                 <th>Model</th>
                 <th>Status</th>
@@ -244,9 +256,9 @@ export default function Predictions() {
                   <td style={{ color: 'var(--primary-light)', fontWeight: 700, fontSize: 15 }}>
                     {fmt(p.predicted_total_cost_next_hour || 0)}
                   </td>
-                  <td>{p.prediction_time ? new Date(p.prediction_time).toLocaleString() : '—'}</td>
+                  <td>{formatBrowserDateTime(p.prediction_time)}</td>
                   <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                    {p.based_on_latest_hour ? new Date(p.based_on_latest_hour).toLocaleString() : '—'}
+                    {formatBrowserHour(p.based_on_latest_hour)}
                   </td>
                   <td>{p.records_used ?? '—'}</td>
                   <td><span className="badge badge-info">{p.model_version ?? 'xgboost_v1'}</span></td>

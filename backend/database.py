@@ -95,7 +95,7 @@ def ensure_indexes(transactions_col, hourly_col, daily_col):
 
 # ── Aggregation helpers ──────────────────────────────────────────────────────
 
-def _build_update(time_key, time_value, metrics_delta):
+def _build_update(time_key, time_value, metrics_delta, source="stream"):
     """
     Build the MongoDB update document used by both hourly and daily upserts.
 
@@ -111,7 +111,7 @@ def _build_update(time_key, time_value, metrics_delta):
     importance = metrics_delta.get("product_importance", "Unknown")
 
     update = {
-        "$setOnInsert": {time_key: time_value, "created_at": now, "source": "stream"},
+        "$setOnInsert": {time_key: time_value, "created_at": now, "source": source},
         "$inc": {
             "total_transactions": 1,
             "total_cost": float(metrics_delta.get("total_cost", 0.0)),
@@ -157,14 +157,14 @@ def _recompute_averages(collection, doc_id, updated_doc):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def update_hourly_metrics(hourly_col, hour_start, metrics_delta):
+def update_hourly_metrics(hourly_col, hour_start, metrics_delta, source="stream"):
     """
     Atomically upsert the hourly-metrics document for *hour_start*
     and recompute derived averages.
 
     Returns the updated document.
     """
-    update = _build_update("hour_start", hour_start, metrics_delta)
+    update = _build_update("hour_start", hour_start, metrics_delta, source=source)
     updated = hourly_col.find_one_and_update(
         {"hour_start": hour_start},
         update,
@@ -175,14 +175,14 @@ def update_hourly_metrics(hourly_col, hour_start, metrics_delta):
     return updated
 
 
-def update_daily_metrics(daily_col, date_start, metrics_delta):
+def update_daily_metrics(daily_col, date_start, metrics_delta, source="stream"):
     """
     Atomically upsert the daily-metrics document for *date_start*
     (midnight UTC of the day) and recompute derived averages.
 
     Returns the updated document.
     """
-    update = _build_update("date_start", date_start, metrics_delta)
+    update = _build_update("date_start", date_start, metrics_delta, source=source)
     updated = daily_col.find_one_and_update(
         {"date_start": date_start},
         update,
@@ -213,7 +213,7 @@ def create_hourly_alerts(alerts_col, hourly_col, hour_start, hourly_doc):
     from datetime import timedelta
 
     alerts = []
-    hour_iso = hour_start.isoformat()
+    hour_iso = hour_start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     on_time_rate = float(hourly_doc.get("on_time_rate", 0.0) or 0.0) * 100
 
     rules = []

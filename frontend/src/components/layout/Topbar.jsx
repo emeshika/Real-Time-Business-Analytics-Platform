@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import LiveBadge, { LiveClock } from '../common/LiveBadge';
 import { fetchAlerts } from '../../services/api';
 import wsService from '../../services/websocket';
+import { browserTimezoneLabel, formatBrowserDateTime } from '../../utils/dateTime';
 
 export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
   const [alertsOpen, setAlertsOpen] = useState(false);
@@ -98,7 +99,8 @@ export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
           ) : recentAlerts.map((alert, index) => (
             <div className="alerts-panel-item" key={alert._id || `${alert.created_at}-${index}`}>
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                {alert.created_at ? new Date(alert.created_at).toLocaleString() : 'Unknown time'}
+                {alert.created_at ? formatBrowserDateTime(alert.created_at) : 'Unknown time'}
+                {' '}{browserTimezoneLabel()}
                 {' · '}<strong>{alert.severity || 'info'}</strong>
               </div>
               <div style={{ fontSize: 13, fontWeight: 700, marginTop: 2 }}>{alert.rule || 'Operational alert'}</div>

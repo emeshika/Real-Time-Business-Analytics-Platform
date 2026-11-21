@@ -57,7 +57,7 @@ def _target_hour(prediction):
 
 @router.get("/evaluation")
 def get_prediction_evaluation(limit: int = Query(default=200, ge=1, le=1000)):
-    """Return saved model metrics and live matched prediction metrics."""
+    """Return offline, backtest, and stream metrics without mixing sources."""
     metrics_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "analytics_ml", "models", "metrics.json",
@@ -69,63 +69,69 @@ def get_prediction_evaluation(limit: int = Query(default=200, ge=1, le=1000)):
         saved_metrics = None
 
     now = datetime.now(timezone.utc)
-    predictions_cursor = (
-        get_predictions_col()
-        .find({}, {"_id": 0})
-        .sort("prediction_time", -1)
-        .limit(limit)
-    )
-    predictions = [serialise_doc(dict(doc)) for doc in predictions_cursor]
 
-    model_actual = []
-    model_predicted = []
-    naive_actual = []
-    naive_predicted = []
-    evaluated = []
-    sources = set()
+    def evaluate_source(source):
+        predictions = [
+            serialise_doc(dict(doc))
+            for doc in get_predictions_col()
+            .find({"source": source}, {"_id": 0})
+            .sort("target_hour", -1)
+            .limit(limit)
+        ]
+        model_actual = []
+        model_predicted = []
+        naive_actual = []
+        naive_predicted = []
+        evaluated = []
 
-    for prediction in predictions:
-        target = _target_hour(prediction)
-        if not target or target >= now.replace(minute=0, second=0, microsecond=0):
-            continue
-        actual_doc = get_hourly_col().find_one({"hour_start": target})
-        if not actual_doc:
-            continue
+        for prediction in predictions:
+            target = _target_hour(prediction)
+            if not target or target >= now.replace(minute=0, second=0, microsecond=0):
+                continue
+            actual_doc = get_hourly_col().find_one({"hour_start": target})
+            if not actual_doc:
+                continue
 
-        actual = float(actual_doc.get("total_cost", 0.0) or 0.0)
-        predicted = float(prediction.get("predicted_total_cost_next_hour", 0.0) or 0.0)
-        previous = get_hourly_col().find_one({"hour_start": target - timedelta(hours=1)})
-        naive = float(previous.get("total_cost", 0.0) or 0.0) if previous else None
+            actual = float(actual_doc.get("total_cost", 0.0) or 0.0)
+            predicted = float(prediction.get("predicted_total_cost_next_hour", 0.0) or 0.0)
+            previous = get_hourly_col().find_one({"hour_start": target - timedelta(hours=1)})
+            naive = float(previous.get("total_cost", 0.0) or 0.0) if previous else None
 
-        model_actual.append(actual)
-        model_predicted.append(predicted)
-        if naive is not None:
-            naive_actual.append(actual)
-            naive_predicted.append(naive)
-        sources.add(prediction.get("source") or "seed")
-        evaluated.append({
-            "target_hour": target.isoformat(),
-            "actual_revenue": actual,
-            "model_predicted": predicted,
-            "naive_predicted": naive,
-        })
+            model_actual.append(actual)
+            model_predicted.append(predicted)
+            if naive is not None:
+                naive_actual.append(actual)
+                naive_predicted.append(naive)
+            evaluated.append({
+                "target_hour": target.isoformat().replace("+00:00", "Z"),
+                "actual_revenue": actual,
+                "model_predicted": predicted,
+                "naive_predicted": naive,
+            })
 
-    live_metrics = {
-        "evaluated_predictions": len(evaluated),
-        "sources": sorted(sources),
-        "model": {
-            "mae": mean_absolute_error(model_actual, model_predicted),
-            "rmse": root_mean_squared_error(model_actual, model_predicted),
-            "mape": mean_absolute_percentage_error(model_actual, model_predicted),
-        },
-        "naive_baseline": {
-            "mae": mean_absolute_error(naive_actual, naive_predicted),
-            "rmse": root_mean_squared_error(naive_actual, naive_predicted),
-            "mape": mean_absolute_percentage_error(naive_actual, naive_predicted),
-        },
-        "evaluated": evaluated,
+        n = len(evaluated)
+        return {
+            "source": source,
+            "n": n,
+            "label": "n=%d, too few to conclude" % n if n < 20 else "n=%d" % n,
+            "model": {
+                "mae": mean_absolute_error(model_actual, model_predicted),
+                "rmse": root_mean_squared_error(model_actual, model_predicted),
+                "mape": mean_absolute_percentage_error(model_actual, model_predicted),
+            },
+            "naive_baseline": {
+                "mae": mean_absolute_error(naive_actual, naive_predicted),
+                "rmse": root_mean_squared_error(naive_actual, naive_predicted),
+                "mape": mean_absolute_percentage_error(naive_actual, naive_predicted),
+            },
+            "evaluated": evaluated,
+        }
+
+    return {
+        "offline_test": saved_metrics,
+        "backtest": evaluate_source("backtest"),
+        "stream": evaluate_source("stream"),
     }
-    return {"saved_metrics": saved_metrics, "live_metrics": live_metrics}
 
 # ── GET /api/predictions ──────────────────────────────────────────────────────
 

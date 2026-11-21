@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, List, Dict
 
 from fastapi import WebSocket
@@ -96,7 +96,8 @@ class ConnectionManager:
 def _json_default(obj: Any) -> str:
     """Handle datetime serialisation inside ``json.dumps``."""
     if isinstance(obj, datetime):
-        return obj.isoformat()
+        utc_val = obj.astimezone(timezone.utc) if obj.tzinfo else obj.replace(tzinfo=timezone.utc)
+        return utc_val.isoformat().replace("+00:00", "Z")
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 

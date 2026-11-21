@@ -100,7 +100,8 @@ def serialise_doc(doc: dict) -> dict:
     doc.pop("_id", None)
     for key, val in doc.items():
         if isinstance(val, datetime):
-            doc[key] = val.isoformat()
+            utc_val = val.astimezone(timezone.utc) if val.tzinfo else val.replace(tzinfo=timezone.utc)
+            doc[key] = utc_val.isoformat().replace("+00:00", "Z")
     return doc
 
 

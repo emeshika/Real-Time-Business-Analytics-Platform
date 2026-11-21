@@ -28,8 +28,8 @@ client.interceptors.response.use(
 export const fetchHealth = () => client.get('/api/health').then((r) => r.data);
 
 // ── Historical transactions ───────────────────────────────────
-export const fetchHistoricalData = (limit = 50) =>
-  client.get('/api/historical-data', { params: { limit } }).then((r) => r.data);
+export const fetchHistoricalData = (limit = 50, source = 'stream') =>
+  client.get('/api/historical-data', { params: { limit, source } }).then((r) => r.data);
 
 // ── Hourly aggregated metrics ─────────────────────────────────
 export const fetchHourlyMetrics = (limit = 24) =>

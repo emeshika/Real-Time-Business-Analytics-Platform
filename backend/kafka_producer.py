@@ -16,6 +16,7 @@ Run:
 import json
 import logging
 import sys
+import os
 
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
@@ -23,7 +24,7 @@ from kafka.errors import NoBrokersAvailable
 from stream_generator import generate_messages
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-KAFKA_BROKER   = "localhost:9092"      # default local Kafka address
+KAFKA_BROKER   = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
 TOPIC_NAME     = "live-business-transactions"
 DELAY_SECONDS  = 1.0                   # seconds between messages
 
@@ -40,6 +41,7 @@ def create_producer() -> KafkaProducer:
     """Create and return a KafkaProducer with JSON value serialisation."""
     return KafkaProducer(
         bootstrap_servers=KAFKA_BROKER,
+        api_version=(4, 0, 0),
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         # Reliability settings
         acks="all",          # wait for all in-sync replicas

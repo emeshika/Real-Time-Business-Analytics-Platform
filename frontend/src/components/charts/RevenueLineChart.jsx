@@ -2,6 +2,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
+import { browserTimezoneLabel, formatBrowserDateTime } from '../../utils/dateTime';
 
 const fmt = (v) =>
   v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v.toFixed(0)}`;
@@ -15,7 +16,9 @@ const CustomTooltip = ({ active, payload, label }) => {
       borderRadius: 8, padding: '10px 14px',
       boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
     }}>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
+        {formatBrowserDateTime(label)} ({browserTimezoneLabel()})
+      </div>
       {payload.map((p) => (
         <div key={p.name} style={{ fontSize: 13, fontWeight: 600, color: p.color }}>
           {p.name === 'total_cost' ? 'Revenue' : p.name}: {fmt(p.value)}
@@ -34,9 +37,7 @@ export default function RevenueLineChart({ data = [] }) {
     .slice()
     .sort((a, b) => new Date(a.hour_start) - new Date(b.hour_start))
     .map((d) => ({
-      time: new Date(d.hour_start).toLocaleTimeString('en-US', {
-        hour: '2-digit', minute: '2-digit', hour12: false,
-      }),
+      time: d.hour_start,
       total_cost: d.total_cost || 0,
       transactions: d.total_transactions || 0,
     }));
@@ -57,10 +58,12 @@ export default function RevenueLineChart({ data = [] }) {
         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
         <XAxis
           dataKey="time"
+          tickFormatter={(value) => formatBrowserDateTime(value)}
           tick={{ fontSize: 10, fill: '#64748b' }}
           tickLine={false}
           axisLine={false}
           interval="preserveStartEnd"
+          label={{ value: `Browser local (${browserTimezoneLabel()})`, position: 'insideBottom', offset: -5 }}
         />
         <YAxis
           tickFormatter={fmt}

@@ -35,6 +35,7 @@ router = APIRouter(prefix="/api", tags=["Historical Data"])
 @router.get("/historical-data")
 def get_historical_data(
     limit: int = Query(default=100, ge=1, le=1000, description="Max records to return"),
+    source: str = Query(default="stream", description="Data provenance filter"),
 ):
     """
     Fetch the most recent raw transactions.
@@ -45,7 +46,10 @@ def get_historical_data(
     """
     cursor = (
         get_transactions_col()
-        .find({}, {"_id": 0})
+        .find(
+            {"source": source, "id": {"$gte": 1, "$lte": 10999}},
+            {"_id": 0},
+        )
         .sort("event_time", -1)
         .limit(limit)
     )

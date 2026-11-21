@@ -2,7 +2,7 @@
 
 PulseBI is a local real-time analytics dashboard with Kafka ingestion, MongoDB aggregation, XGBoost forecasting, FastAPI REST/WebSocket endpoints, and a React frontend.
 
-> **Honest data statement:** PulseBI uses a simulated real-time stream that replays the public Kaggle dataset **E-Commerce Shipping Data (Customer Analytics)**: <https://www.kaggle.com/datasets/prachi13/customer-analytics>. The CSV contains 10,999 rows and is replayed in a loop at 1 row per second. Historical hourly/daily data and initial prediction documents are backfilled with synthetic data by `backend/seed_db.py`.
+> **Honest data statement:** PulseBI uses a simulated real-time stream that replays the public Kaggle dataset **E-Commerce Shipping Data (Customer Analytics)**: <https://www.kaggle.com/datasets/prachi13/customer-analytics>. The CSV contains 10,999 rows and is replayed in a loop at 1 row per second. `backend/seed_db.py` backfills 30 days of hourly/daily data by sampling real CSV rows and applying the same aggregation helpers as the live consumer. `train_model.py` then creates historical walk-forward backtest predictions.
 
 ## Architecture
 
@@ -131,14 +131,14 @@ Features used:
 
 Training uses all available documents in `hourly_metrics`, sorted by timestamp, then uses an 80/20 time-ordered split without shuffling. The model is an `XGBRegressor` and is saved as `backend/analytics_ml/models/sales_model.pkl` together with its feature list.
 
-`backend/analytics_ml/train_model.py` writes `backend/analytics_ml/models/metrics.json`. The checked-in metrics were produced from 16 training rows and 5 test rows over the date range `2026-11-19T16:00:00` to `2026-11-20T12:00:00`:
+`backend/analytics_ml/train_model.py` writes `backend/analytics_ml/models/metrics.json`. The checked-in offline metrics were produced from 573 training rows and 144 test rows (`n=144`) over the date range `2026-10-21T18:00:00` to `2026-11-20T14:00:00`:
 
 | Metric | XGBoost | Naive baseline (previous hour) |
 |---|---:|---:|
-| MAE | 3131.7446 | 6574.332 |
-| RMSE | 3833.5625 | 7072.8735 |
-| MAPE | 22.7035% | 57.7897% |
-| R2 | 0.1220 | Not calculated |
+| MAE | 80.6385 | 253.1528 |
+| RMSE | 113.0363 | 344.1065 |
+| MAPE | 2.4330% | 7.7686% |
+| R2 | 0.9039 | Not calculated |
 
 The naive baseline predicts that next-hour revenue equals the previous completed hour's `total_cost`. Live matched metrics are available from `GET /api/predictions/evaluation`.
 
@@ -239,7 +239,7 @@ Run from `backend/`:
 python seed_db.py
 ```
 
-This creates synthetic transactions, 24 hourly documents, 7 daily documents, and initial prediction documents.
+This creates 30 days of hourly/daily history from real CSV rows and clears/recreates the transactions collection with source `"seed_csv"`. Run `train_model.py` afterward to create model backtest predictions with source `"backtest"`; the running forecast engine creates source `"stream"` predictions.
 
 ### 5. Train the model
 
@@ -328,10 +328,10 @@ Team lead: **Hirushi Emeshika**
 
 ## Limitations
 
-- The public Kaggle shipping CSV is not an hourly time-series dataset. PulseBI adds live timestamps while replaying it.
+- The public Kaggle shipping CSV is a shuffled shipping dataset, not a naturally ordered hourly time series. PulseBI adds timestamps only for replay/backfill; forecast skill is not expected as a real-world claim.
 - Live replay timestamps, seeded hourly timestamps, and seeded prediction timestamps determine the chart timeline.
 - `forecast_engine.py` predicts `total_cost` from hourly aggregates, but the dataset and seed history are limited for a strong forecasting evaluation.
 - Metrics are compared against a simple previous-hour naive baseline.
 - Backend operational alerts are rule-based and are not a full anomaly detection platform.
-- MongoDB seed data is synthetic and can replace existing seeded collections.
+- MongoDB seed transactions, hourly metrics, and daily metrics are sampled from the real CSV rather than invented random values. Rerunning the seed script replaces the seeded collections.
 - No automated browser test suite or screenshot set is currently stored in the repository.

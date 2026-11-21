@@ -2,6 +2,7 @@ import {
   ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
+import { browserTimezoneLabel } from '../../utils/dateTime';
 
 const fmt = (v) =>
   v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v?.toFixed(0) ?? 0}`;
@@ -17,7 +18,7 @@ const CustomTooltip = ({ active, payload, label }) => {
       minWidth: 180,
     }}>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
-        {label ? new Date(label).toLocaleString() : ''}
+        {label ? `${new Date(label).toLocaleString()} (${browserTimezoneLabel()})` : ''}
       </div>
       {payload.map((p) => (
         <div key={p.name} style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 2 }}>
@@ -93,8 +94,10 @@ export default function ForecastChart({ hourlyData = [], predictions = [] }) {
           tickFormatter={(value) =>
             new Date(value).toLocaleString('en-US', {
               month: 'short', day: 'numeric', hour: '2-digit', hour12: false,
+              timeZoneName: 'short',
             })
           }
+          label={{ value: `Browser local time (${browserTimezoneLabel()})`, position: 'insideBottom', offset: -5 }}
           tick={{ fontSize: 10, fill: '#64748b' }}
           tickLine={false}
           axisLine={false}

@@ -11,6 +11,7 @@ import {
   generatePredictions,
   computeKPIs,
 } from '../services/dummyData';
+import { browserTimezoneLabel, formatBrowserDateTime } from '../utils/dateTime';
 
 const fmt = (n) =>
   n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` :
@@ -34,34 +35,36 @@ export default function Dashboard({ wsStatus, pushAlert }) {
   const loadData = useCallback(async () => {
     try {
       const [hourlyRes, txRes, predRes] = await Promise.all([
-        fetchHourlyMetrics(24),
-        fetchHistoricalData(25),
+        fetchHourlyMetrics(48),
+        fetchHistoricalData(25, 'stream'),
         fetchPredictions(10),
       ]);
-      const h = hourlyRes.data?.length ? hourlyRes.data : generateHourlyMetrics(24);
-      const t = txRes.data?.length     ? txRes.data     : generateTransactions(20);
+      const h = hourlyRes.data?.length ? hourlyRes.data : generateHourlyMetrics(48);
+      const t = (txRes.data?.length ? txRes.data : []).filter(
+        (tx) => tx.source === 'stream' && tx.id >= 1 && tx.id <= 10999,
+      ).sort((a, b) => new Date(b.event_time || b.timestamp) - new Date(a.event_time || a.timestamp));
       const p = predRes.predictions?.length ? predRes.predictions : generatePredictions(8);
-      const nextKpis = computeKPIs(h);
-      setPrevKpis((current) => current ?? kpis);
+      const sortedHours = [...h].sort(
+        (a, b) => new Date(b.hour_start) - new Date(a.hour_start),
+      );
+      const currentWindow = sortedHours.slice(0, 24);
+      const previousWindow = sortedHours.slice(24, 48);
+      const nextKpis = computeKPIs(currentWindow);
+      setPrevKpis(previousWindow.length ? computeKPIs(previousWindow) : null);
       setHourlyData(h);
       setTransactions(t);
       setPredictions(p);
-      setKpis((current) => {
-        setPrevKpis(current);
-        return nextKpis;
-      });
+      setKpis(nextKpis);
     } catch {
       // Use resilient sample data when the REST service is unavailable
       const h = generateHourlyMetrics(24);
-      const t = generateTransactions(20);
+      const t = [];
       const p = generatePredictions(8);
       setHourlyData(h);
       setTransactions(t);
       setPredictions(p);
-      setKpis((current) => {
-        setPrevKpis(current);
-        return computeKPIs(h);
-      });
+      setPrevKpis(null);
+      setKpis(computeKPIs(h));
     } finally {
       setLoading(false);
     }
@@ -79,7 +82,10 @@ export default function Dashboard({ wsStatus, pushAlert }) {
   useEffect(() => {
     import('../services/websocket').then(({ default: wsService }) => {
       const onTx = (data) => {
-        setTransactions((prev) => [data, ...prev].slice(0, 25));
+        if (data.source !== 'stream' || data.id < 1 || data.id > 10999) return;
+        setTransactions((prev) => [data, ...prev]
+          .sort((a, b) => new Date(b.event_time || b.timestamp) - new Date(a.event_time || a.timestamp))
+          .slice(0, 25));
         setNewRowIds((prev) => {
           const next = new Set(prev);
           next.add(data.id ?? Date.now());
@@ -130,7 +136,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
   // ── KPI change helpers ──────────────────────────────────────
   const kpiChange = (curr, prev, prefix = '$') => {
     if (prev === null || prev === undefined) {
-      return { text: '0.0%', dir: 'neutral' };
+      return { text: '—', dir: 'neutral' };
     }
     if (prev === 0) return { text: curr === 0 ? '0.0%' : '+100.0%', dir: curr >= 0 ? 'up' : 'down' };
     const pct = ((curr - prev) / Math.abs(prev)) * 100;
@@ -249,6 +255,8 @@ export default function Dashboard({ wsStatus, pushAlert }) {
             <thead>
               <tr>
                 <th>ID</th>
+                <th>Source</th>
+                <th>Event Time ({browserTimezoneLabel()})</th>
                 <th>Warehouse</th>
                 <th>Shipment</th>
                 <th>Product Cost</th>
@@ -263,6 +271,8 @@ export default function Dashboard({ wsStatus, pushAlert }) {
               {transactions.map((tx, idx) => (
                 <tr key={tx.id ?? idx} className={newRowIds.has(tx.id) ? 'new-row' : ''}>
                   <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>#{tx.id}</td>
+                  <td><span className="badge badge-cyan">{tx.source || 'stream'}</span></td>
+                  <td>{formatBrowserDateTime(tx.event_time || tx.timestamp)}</td>
                   <td>
                     <span className="badge badge-info">Block {tx.warehouse_block}</span>
                   </td>
@@ -303,7 +313,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
       </div>
       <footer className="dashboard-footer">
         Simulated real-time stream replaying a public Kaggle e-commerce shipping dataset (10,999 rows).
-        Historical data is backfilled with synthetic seed data.
+        Historical hourly and daily data is backfilled from sampled CSV rows through the same aggregation pipeline.
       </footer>
     </div>
   );

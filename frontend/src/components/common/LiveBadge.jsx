@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { browserTimezoneLabel } from '../../utils/dateTime';
 
 /**
  * LiveBadge — shows current WebSocket connection status.
@@ -30,8 +31,10 @@ export function LiveClock() {
   }, []);
 
   return (
-    <span className="live-clock">
-      {time.toLocaleTimeString('en-US', { hour12: false })}
+    <span className="live-clock" title={`Browser local timezone: ${browserTimezoneLabel()}`}>
+      {time.toLocaleTimeString(undefined, { hour12: false })}
+      {' '}
+      {browserTimezoneLabel()}
     </span>
   );
 }

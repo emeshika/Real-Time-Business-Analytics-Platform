@@ -103,9 +103,8 @@ def build_feature_row(docs):
         "avg_rating"         : float(latest.get("avg_rating", 0) or 0),
         "total_weight"       : float(latest.get("total_weight", 0) or 0),
         "hour"               : ts.hour,
-        "day_of_week"        : ts.dayofweek,
+        "day_of_week"        : ts.day_of_week,
         "day_of_month"       : ts.day,
-        "is_weekend"         : int(ts.dayofweek >= 5),
         "lag_1h"             : float(df["total_cost"].iloc[-1]) if "total_cost" in df.columns else 0.0,
         "lag_2h"             : float(df["total_cost"].iloc[-2]) if len(df) >= 2 and "total_cost" in df.columns else 0.0,
         "lag_3h"             : float(df["total_cost"].iloc[-3]) if len(df) >= 3 and "total_cost" in df.columns else 0.0,
@@ -163,12 +162,22 @@ while True:
                 raw_prediction = model.predict(features)[0]
                 predicted_cost = max(0.0, float(raw_prediction))  # never negative
 
+                latest_hour = pd.to_datetime(latest_doc.get("hour_start"))
+                if latest_hour.tzinfo is None:
+                    latest_hour = latest_hour.tz_localize("UTC")
+                else:
+                    latest_hour = latest_hour.tz_convert("UTC")
+                latest_hour_iso = latest_hour.isoformat().replace("+00:00", "Z")
+                target_hour = (latest_hour + timedelta(hours=1)).replace(
+                    minute=0, second=0, microsecond=0
+                ).isoformat().replace("+00:00", "Z")
+
                 # Clean JSON output — this is what Team 04 will consume
                 output = {
                     "predicted_total_cost_next_hour" : round(predicted_cost, 2),
-                    "prediction_time"                : datetime.now(timezone.utc).isoformat(),
-                    "based_on_latest_hour"           : str(latest_doc.get("hour_start", "unknown")),
-                    "target_hour"                    : (pd.to_datetime(latest_doc.get("hour_start")) + timedelta(hours=1)).isoformat(),
+                    "prediction_time"                : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "based_on_latest_hour"           : latest_hour_iso,
+                    "target_hour"                    : target_hour,
                     "source"                         : "stream",
                     "records_used"                   : len(docs),
                     "model_version"                  : "xgboost_v1",

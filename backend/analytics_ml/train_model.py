@@ -17,7 +17,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 import joblib
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 try:
     from analytics_ml.metrics import (
@@ -103,7 +103,7 @@ print("\n[4/6] Engineering time and lag features...")
 
 # Time-based features extracted from the timestamp
 df["hour"]          = df["timestamp"].dt.hour
-df["day_of_week"]   = df["timestamp"].dt.dayofweek    # 0=Mon, 6=Sun
+df["day_of_week"]   = df["timestamp"].dt.day_of_week    # 0=Mon, 6=Sun
 df["day_of_month"]  = df["timestamp"].dt.day
 df["is_weekend"]    = (df["day_of_week"] >= 5).astype(int)
 
@@ -211,7 +211,7 @@ joblib.dump(
         "model"    : model,
         "features" : FINAL_FEATURES,
         "target"   : TARGET,
-        "trained_at": datetime.utcnow().isoformat(),
+        "trained_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "mae"      : float(mae) if len(X_test) > 0 else None,
         "rmse"     : float(rmse) if rmse is not None else None,
         "mape"     : float(mape) if mape is not None else None,
@@ -220,14 +220,14 @@ joblib.dump(
     MODEL_PATH
 )
 
-trained_at = datetime.utcnow().isoformat()
+trained_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 metrics = {
     "model_name": "xgboost_v1",
     "train_size": len(X_train),
     "test_size": len(X_test),
     "date_range": {
-        "start": df["timestamp"].min().isoformat(),
-        "end": df["timestamp"].max().isoformat(),
+        "start": df["timestamp"].min().isoformat().replace("+00:00", "Z"),
+        "end": df["timestamp"].max().isoformat().replace("+00:00", "Z"),
     },
     "trained_at": trained_at,
     "metrics": {
@@ -247,6 +247,47 @@ metrics = {
 METRICS_PATH = os.path.join(MODEL_DIR, "metrics.json")
 with open(METRICS_PATH, "w", encoding="utf-8") as metrics_file:
     json.dump(metrics, metrics_file, indent=2)
+
+# Create historical walk-forward backtest predictions.
+predictions_col = db["predictions"]
+predictions_col.delete_many({"source": "backtest"})
+backtest_docs = []
+for test_index in range(split_idx, len(df)):
+    walk_model = XGBRegressor(
+        n_estimators=300,
+        learning_rate=0.05,
+        max_depth=4,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_child_weight=2,
+        random_state=42,
+        verbosity=0,
+    )
+    walk_model.fit(X.iloc[:test_index], y.iloc[:test_index])
+    predicted_cost = max(0.0, float(walk_model.predict(X.iloc[[test_index]])[0]))
+
+    based_on = df.iloc[test_index]["timestamp"]
+    if hasattr(based_on, "tzinfo") and based_on.tzinfo is not None:
+        based_on_utc = based_on.tz_convert("UTC") if hasattr(based_on, "tz_convert") else based_on.astimezone(timezone.utc)
+    else:
+        based_on_utc = based_on.tz_localize("UTC")
+    based_on_iso = based_on_utc.isoformat().replace("+00:00", "Z")
+    target_hour = (based_on_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    backtest_docs.append({
+        "predicted_total_cost_next_hour": round(predicted_cost, 2),
+        "prediction_time": based_on_iso,
+        "based_on_latest_hour": based_on_iso,
+        "target_hour": target_hour.isoformat().replace("+00:00", "Z"),
+        "records_used": test_index,
+        "model_version": "xgboost_v1",
+        "status": "ok",
+        "source": "backtest",
+        "created_at": based_on_utc,
+        "saved_at": datetime.now(timezone.utc),
+    })
+
+if backtest_docs:
+    predictions_col.insert_many(backtest_docs)
 
 print(f"      ✓ Saved to : {MODEL_PATH}")
 print("\n" + "="*55)

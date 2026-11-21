@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { browserTimezoneLabel, formatBrowserDateTime } from '../../utils/dateTime';
 
 let idCounter = 0;
 
@@ -45,7 +46,7 @@ export default function AlertBanner({ alerts, onClose }) {
     <div className="alerts-container">
       {alerts.map((alert) => {
         const config = ALERT_CONFIG[alert.type] || ALERT_CONFIG.info;
-        const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+        const ts = `${formatBrowserDateTime(new Date())} (${browserTimezoneLabel()})`;
 
         return (
           <div key={alert.id} className={`alert-item ${alert.type || 'info'}`}>

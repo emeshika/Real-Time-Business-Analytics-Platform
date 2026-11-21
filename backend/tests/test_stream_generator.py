@@ -24,3 +24,4 @@ def test_stream_generator_yields_expected_csv_fields(monkeypatch):
         "timestamp",
     }
     assert expected.issubset(message)
+    assert message["timestamp"].endswith("Z")

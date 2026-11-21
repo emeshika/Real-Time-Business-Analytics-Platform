@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
 TOPIC_NAME = os.getenv("KAFKA_TOPIC", "live-business-transactions")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -57,6 +57,7 @@ try:
     consumer = KafkaConsumer(
         TOPIC_NAME,
         bootstrap_servers=BOOTSTRAP_SERVERS,
+        api_version=(4, 0, 0),
         auto_offset_reset="latest",
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )

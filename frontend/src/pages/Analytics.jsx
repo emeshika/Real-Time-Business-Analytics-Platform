@@ -41,7 +41,7 @@ export default function Analytics() {
   const dailyChart = daily
     .slice().sort((a, b) => new Date(a.date_start) - new Date(b.date_start))
     .map((d) => ({
-      day: new Date(d.date_start).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      day: new Date(d.date_start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
       revenue: d.total_cost || 0,
       orders:  d.total_transactions || 0,
       rating:  d.avg_rating || 0,

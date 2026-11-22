@@ -102,21 +102,6 @@ useEffect(() => {
           )}
         </div>
 
-        {/* Settings */}
-        <div className="topbar-text-button">Menu</div>
-
-        {/* Avatar */}
-        <div style={{
-          width: 36, height: 36,
-          borderRadius: '50%',
-          background: 'linear-gradient(135deg, var(--primary), var(--accent))',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 13, fontWeight: 700, color: '#fff',
-          border: '2px solid var(--border-hover)',
-          cursor: 'pointer', flexShrink: 0,
-        }}>
-          BI
-        </div>
       </div>
       {alertsOpen && (
         <div className="alerts-panel">

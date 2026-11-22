@@ -5,20 +5,22 @@ import ShipmentBarChart from '../components/charts/ShipmentBarChart';
 import WarehouseDonut from '../components/charts/WarehouseDonut';
 import ForecastChart from '../components/charts/ForecastChart';
 import { fetchHourlyMetrics, fetchHistoricalData, fetchPredictions } from '../services/api';
-import {
-  generateHourlyMetrics,
-  generateTransactions,
-  generatePredictions,
-  computeKPIs,
-} from '../services/dummyData';
+import { computeKPIs } from '../services/dummyData';
+import wsService from '../services/websocket';
 import { browserTimezoneLabel, formatBrowserDateTime } from '../utils/dateTime';
 
 const fmt = (n) =>
   n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` :
-  n >= 1_000     ? `$${(n / 1_000).toFixed(1)}k` :
+  n >= 1_000     ? `$${(n / 1_000).toFixed(1)}K` :
                    `$${n?.toFixed(2) ?? '0.00'}`;
 
 const POLL_INTERVAL = 10_000; // refresh REST data every 10s
+const MAX_ROWS = 25;
+
+const eventTime = (tx) => tx.event_time || tx.timestamp;
+const rowKey = (tx) => `${tx.id}-${eventTime(tx)}`;
+const byNewest = (a, b) => new Date(eventTime(b)) - new Date(eventTime(a));
+const isStreamRow = (tx) => tx.source === 'stream' && tx.id >= 1 && tx.id <= 10999;
 
 export default function Dashboard({ wsStatus, pushAlert }) {
   // ── State ───────────────────────────────────────────────────
@@ -28,43 +30,81 @@ export default function Dashboard({ wsStatus, pushAlert }) {
   const [kpis, setKpis]                   = useState({ totalRevenue: 0, totalOrders: 0, avgRating: 0, onTimeRate: 0 });
   const [prevKpis, setPrevKpis]           = useState(null);
   const [loading, setLoading]             = useState(true);
+  const [apiError, setApiError]           = useState(false);
   const [newRowIds, setNewRowIds]         = useState(new Set());
   const prevPredCost = useRef(null);
+
+  // Keep the latest pushAlert in a ref so the WebSocket listeners are
+  // registered once and never re-subscribed when the prop identity changes.
+  const pushAlertRef = useRef(pushAlert);
+  useEffect(() => {
+    pushAlertRef.current = pushAlert;
+  }, [pushAlert]);
 
   // ── Load data (REST) ────────────────────────────────────────
   const loadData = useCallback(async () => {
     try {
       const [hourlyRes, txRes, predRes] = await Promise.all([
         fetchHourlyMetrics(48),
-        fetchHistoricalData(25, 'stream'),
+        fetchHistoricalData(MAX_ROWS, 'stream'),
         fetchPredictions(10),
       ]);
-      const h = hourlyRes.data?.length ? hourlyRes.data : generateHourlyMetrics(48);
-      const t = (txRes.data?.length ? txRes.data : []).filter(
-        (tx) => tx.source === 'stream' && tx.id >= 1 && tx.id <= 10999,
-      ).sort((a, b) => new Date(b.event_time || b.timestamp) - new Date(a.event_time || a.timestamp));
-      const p = predRes.predictions?.length ? predRes.predictions : generatePredictions(8);
+
+      const h = hourlyRes.data?.length ? hourlyRes.data : [];
+
+      // De-duplicate by id + event time, keep only real stream rows
+      const seen = new Set();
+      const t = (txRes.data?.length ? txRes.data : [])
+        .filter(isStreamRow)
+        .filter((tx) => {
+          const key = rowKey(tx);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort(byNewest);
+
+      const p = predRes.predictions?.length ? predRes.predictions : [];
+
+      // 24h window ending at the newest hourly document, plus the 24h before it
       const sortedHours = [...h].sort(
         (a, b) => new Date(b.hour_start) - new Date(a.hour_start),
       );
-      const currentWindow = sortedHours.slice(0, 24);
-      const previousWindow = sortedHours.slice(24, 48);
-      const nextKpis = computeKPIs(currentWindow);
+      const newestHour = sortedHours[0] ? new Date(sortedHours[0].hour_start) : null;
+      const windowStart = newestHour
+        ? new Date(newestHour.getTime() - 23 * 60 * 60 * 1000)
+        : null;
+      const currentWindow = windowStart
+        ? sortedHours
+            .filter((d) => {
+              const hour = new Date(d.hour_start);
+              return hour >= windowStart && hour <= newestHour;
+            })
+            .sort((a, b) => new Date(a.hour_start) - new Date(b.hour_start))
+        : [];
+      const previousEnd = windowStart;
+      const previousStart = previousEnd
+        ? new Date(previousEnd.getTime() - 24 * 60 * 60 * 1000)
+        : null;
+      const previousWindow = previousStart
+        ? sortedHours
+            .filter((d) => {
+              const hour = new Date(d.hour_start);
+              return hour >= previousStart && hour < previousEnd;
+            })
+            .sort((a, b) => new Date(a.hour_start) - new Date(b.hour_start))
+        : [];
+
       setPrevKpis(previousWindow.length ? computeKPIs(previousWindow) : null);
-      setHourlyData(h);
+      setHourlyData(currentWindow);
       setTransactions(t);
       setPredictions(p);
-      setKpis(nextKpis);
+      setKpis(computeKPIs(currentWindow));
+      setApiError(false);
     } catch {
-      // Use resilient sample data when the REST service is unavailable
-      const h = generateHourlyMetrics(24);
-      const t = [];
-      const p = generatePredictions(8);
-      setHourlyData(h);
-      setTransactions(t);
-      setPredictions(p);
-      setPrevKpis(null);
-      setKpis(computeKPIs(h));
+      // Keep whatever was last loaded and tell the user, instead of
+      // replacing real data with generated sample numbers.
+      setApiError(true);
     } finally {
       setLoading(false);
     }
@@ -77,64 +117,70 @@ export default function Dashboard({ wsStatus, pushAlert }) {
   }, [loadData]);
 
   // ── WebSocket live updates ──────────────────────────────────
-  // These are injected via App.jsx through wsLiveTx / wsLivePred props
-  // but we also listen via the wsService singleton directly.
   useEffect(() => {
-    import('../services/websocket').then(({ default: wsService }) => {
-      const onTx = (data) => {
-        if (data.source !== 'stream' || data.id < 1 || data.id > 10999) return;
-        setTransactions((prev) => [data, ...prev]
-          .sort((a, b) => new Date(b.event_time || b.timestamp) - new Date(a.event_time || a.timestamp))
-          .slice(0, 25));
+    const onTx = (data) => {
+      if (!isStreamRow(data)) return;
+
+      // Insert, replacing any row with the same id + event time
+      setTransactions((prev) => {
+        const key = rowKey(data);
+        const rest = prev.filter((tx) => rowKey(tx) !== key);
+        return [data, ...rest].sort(byNewest).slice(0, MAX_ROWS);
+      });
+
+      // Briefly highlight the new row
+      const rowId = data.id ?? Date.now();
+      setNewRowIds((prev) => new Set(prev).add(rowId));
+      setTimeout(() => {
         setNewRowIds((prev) => {
           const next = new Set(prev);
-          next.add(data.id ?? Date.now());
-          setTimeout(() => setNewRowIds((s) => { const n2 = new Set(s); n2.delete(data.id ?? 0); return n2; }), 1200);
+          next.delete(rowId);
           return next;
         });
-        // Re-compute KPIs incrementally (lightweight update)
-        setKpis((prev) => ({
-          ...prev,
-          totalOrders: prev.totalOrders + 1,
-          totalRevenue: prev.totalRevenue + (data.cost_of_product || 0),
-        }));
-      };
+      }, 1200);
 
-      const onPred = (data) => {
-        const cost = data.predicted_total_cost_next_hour || 0;
-        setPredictions((prev) => [data, ...prev].slice(0, 10));
+      // Lightweight incremental KPI update (the next REST poll corrects it)
+      setKpis((prev) => ({
+        ...prev,
+        totalOrders: prev.totalOrders + 1,
+        totalRevenue: prev.totalRevenue + (data.cost_of_product || 0),
+      }));
+    };
 
-        // Anomaly detection: >25% spike vs rolling avg
-        if (prevPredCost.current !== null) {
-          const pct = ((cost - prevPredCost.current) / (prevPredCost.current || 1)) * 100;
-          if (Math.abs(pct) > 25) {
-            pushAlert({
-              type: 'anomaly',
-              title: `Prediction spike: ${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`,
-              message: `Predicted cost next hour: ${fmt(cost)}. Significant deviation detected.`,
-            });
-          } else {
-            pushAlert({
-              type: 'prediction',
-              title: 'New ML Forecast Ready',
-              message: `Predicted revenue next hour: ${fmt(cost)}`,
-            });
-          }
+    const onPred = (data) => {
+      const cost = data.predicted_total_cost_next_hour || 0;
+      setPredictions((prev) => [data, ...prev].slice(0, 10));
+
+      // Prediction-spike rule: >25% change vs the previous prediction
+      if (prevPredCost.current !== null) {
+        const pct = ((cost - prevPredCost.current) / (prevPredCost.current || 1)) * 100;
+        if (Math.abs(pct) > 25) {
+          pushAlertRef.current?.({
+            type: 'anomaly',
+            title: `Prediction spike: ${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`,
+            message: `Predicted cost next hour: ${fmt(cost)}. Significant deviation detected.`,
+          });
+        } else {
+          pushAlertRef.current?.({
+            type: 'prediction',
+            title: 'New ML Forecast Ready',
+            message: `Predicted revenue next hour: ${fmt(cost)}`,
+          });
         }
-        prevPredCost.current = cost;
-      };
+      }
+      prevPredCost.current = cost;
+    };
 
-      wsService.on('new_transaction', onTx);
-      wsService.on('new_prediction', onPred);
-      return () => {
-        wsService.off('new_transaction', onTx);
-        wsService.off('new_prediction', onPred);
-      };
-    });
-  }, [pushAlert]);
+    wsService.on('new_transaction', onTx);
+    wsService.on('new_prediction', onPred);
+    return () => {
+      wsService.off('new_transaction', onTx);
+      wsService.off('new_prediction', onPred);
+    };
+  }, []);
 
   // ── KPI change helpers ──────────────────────────────────────
-  const kpiChange = (curr, prev, prefix = '$') => {
+  const kpiChange = (curr, prev) => {
     if (prev === null || prev === undefined) {
       return { text: '—', dir: 'neutral' };
     }
@@ -143,16 +189,16 @@ export default function Dashboard({ wsStatus, pushAlert }) {
     return { text: `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`, dir: pct > 0 ? 'up' : 'down' };
   };
 
-  const revChange   = kpiChange(kpis.totalRevenue, prevKpis?.totalRevenue);
-  const ordChange   = kpiChange(kpis.totalOrders,  prevKpis?.totalOrders);
-  const ratChange   = kpiChange(kpis.avgRating,    prevKpis?.avgRating);
-  const ottChange   = kpiChange(kpis.onTimeRate,   prevKpis?.onTimeRate);
+  const revChange = kpiChange(kpis.totalRevenue, prevKpis?.totalRevenue);
+  const ordChange = kpiChange(kpis.totalOrders,  prevKpis?.totalOrders);
+  const ratChange = kpiChange(kpis.avgRating,    prevKpis?.avgRating);
+  const ottChange = kpiChange(kpis.onTimeRate,   prevKpis?.onTimeRate);
 
   if (loading) {
     return (
       <div className="page-content">
         <div className="kpi-grid">
-          {[1,2,3,4].map((i) => (
+          {[1, 2, 3, 4].map((i) => (
             <div key={i} className="kpi-card">
               <div className="skeleton" style={{ height: 12, width: '40%', marginBottom: 16 }} />
               <div className="skeleton" style={{ height: 36, width: '70%', marginBottom: 12 }} />
@@ -166,6 +212,22 @@ export default function Dashboard({ wsStatus, pushAlert }) {
 
   return (
     <div className="page-content">
+      {apiError && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 16,
+            padding: '10px 14px',
+            borderRadius: 8,
+            border: '1px solid var(--warning)',
+            color: 'var(--warning)',
+            fontSize: 13,
+          }}
+        >
+          Cannot reach the PulseBI API. Showing the last data received; retrying every 10 seconds.
+        </div>
+      )}
+
       {/* ── KPI Cards ──────────────────────────────────────── */}
       <div className="kpi-grid">
         <KpiCard
@@ -207,7 +269,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
         {/* Revenue trend */}
         <div className="chart-card">
           <div className="chart-title" title="Revenue = total product cost (USD)">Revenue Trend — Last 24 Hours</div>
-          <div className="chart-subtitle">Hourly total product cost (USD)</div>
+          <div className="chart-subtitle">Hourly total product cost (USD) · times in {browserTimezoneLabel()}</div>
           <RevenueLineChart data={hourlyData} />
         </div>
 
@@ -225,9 +287,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
         <div className="chart-card">
           <div className="chart-title" title="Revenue = total product cost (USD)">Revenue Forecast</div>
           <div className="chart-subtitle">
-            <span style={{ color: '#22d3ee' }}>Actual</span>
-            <span style={{ color: 'var(--text-muted)' }}> / </span>
-            <span style={{ color: '#6366f1' }}>Predicted</span>
+            Actual / Predicted · times in {browserTimezoneLabel()}
           </div>
           <ForecastChart hourlyData={hourlyData} predictions={predictions} />
         </div>
@@ -268,11 +328,11 @@ export default function Dashboard({ wsStatus, pushAlert }) {
               </tr>
             </thead>
             <tbody>
-              {transactions.map((tx, idx) => (
-                <tr key={tx.id ?? idx} className={newRowIds.has(tx.id) ? 'new-row' : ''}>
+              {transactions.map((tx) => (
+                <tr key={rowKey(tx)} className={newRowIds.has(tx.id) ? 'new-row' : ''}>
                   <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>#{tx.id}</td>
                   <td><span className="badge badge-cyan">{tx.source || 'stream'}</span></td>
-                  <td>{formatBrowserDateTime(tx.event_time || tx.timestamp)}</td>
+                  <td>{formatBrowserDateTime(eventTime(tx))}</td>
                   <td>
                     <span className="badge badge-info">Block {tx.warehouse_block}</span>
                   </td>
@@ -289,7 +349,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
                     ${tx.cost_of_product?.toFixed(2) ?? '—'}
                   </td>
                   <td style={{ color: 'var(--warning)' }}>{tx.discount_offered?.toFixed(1)}%</td>
-                  <td>{(tx.customer_rating || 0).toFixed ? `${tx.customer_rating.toFixed(1)} / 5` : `${tx.customer_rating || 0} / 5`}</td>
+                  <td>{Number(tx.customer_rating || 0).toFixed(1)} / 5</td>
                   <td>
                     {tx.reached_on_time === 1
                       ? <span className="badge badge-success">Yes</span>

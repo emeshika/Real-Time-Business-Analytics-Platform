@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import LiveBadge, { LiveClock } from '../common/LiveBadge';
-import { fetchAlerts } from '../../services/api';
+import { fetchAlerts, fetchHistoricalData } from '../../services/api';
 import wsService from '../../services/websocket';
 import { browserTimezoneLabel, formatBrowserDateTime } from '../../utils/dateTime';
 
-export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
+export default function Topbar({ title, subtitle, wsStatus, lastStreamEvent = null, alertCount = 0 }) {
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [recentAlerts, setRecentAlerts] = useState([]);
   const [unread, setUnread] = useState(0);
   const initialised = useRef(false);
+  const [lastEvent, setLastEvent] = useState(null);
 
   useEffect(() => {
     const load = async () => {
@@ -35,6 +36,32 @@ export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
     return () => wsService.off('new_alert', onAlert);
   }, []);
 
+  // Latest stream event from REST (works even before any WebSocket message)
+useEffect(() => {
+  const loadLatest = async () => {
+    try {
+      const res = await fetchHistoricalData(5, 'stream');
+      const times = (res.data || [])
+        .map((t) => new Date(t.event_time || t.timestamp).getTime())
+        .filter(Number.isFinite);
+      if (times.length) {
+        const newest = Math.max(...times);
+        setLastEvent((cur) => (cur && cur > newest ? cur : newest));
+      }
+    } catch { /* ignore */ }
+  };
+  loadLatest();
+  const t = setInterval(loadLatest, 10000);
+  return () => clearInterval(t);
+}, []);
+
+// Live WebSocket arrivals
+useEffect(() => {
+  const onTx = () => setLastEvent(Date.now());
+  wsService.on('new_transaction', onTx);
+  return () => wsService.off('new_transaction', onTx);
+}, []);
+
   const toggleAlerts = () => {
     setAlertsOpen((open) => !open);
     if (!alertsOpen) setUnread(0);
@@ -51,7 +78,7 @@ export default function Topbar({ title, subtitle, wsStatus, alertCount = 0 }) {
 
       <div className="topbar-right">
         <LiveClock />
-        <LiveBadge status={wsStatus} />
+        <LiveBadge status={wsStatus} lastEventAt={lastEvent ?? lastStreamEvent} />
 
         {/* Notification bell */}
         <div

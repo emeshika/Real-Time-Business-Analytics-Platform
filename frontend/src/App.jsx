@@ -17,31 +17,23 @@ const PAGE_META = {
 
 export default function App() {
   const [wsStatus, setWsStatus] = useState('disconnected');
-  const [fallbackStatus, setFallbackStatus] = useState(false);
+  const [lastStreamEvent, setLastStreamEvent] = useState(null);
   const { alerts, pushAlert, removeAlert } = useAlerts(5);
 
   // ── Connect WebSocket on mount ──────────────────────────────
   useEffect(() => {
     wsService.onStatus(setWsStatus);
+    const onTransaction = (data) => {
+      setLastStreamEvent(data.event_time || data.timestamp || new Date().toISOString());
+    };
+    wsService.on('new_transaction', onTransaction);
     wsService.connect();
     return () => {
       wsService.offStatus(setWsStatus);
+      wsService.off('new_transaction', onTransaction);
       wsService.disconnect();
     };
   }, []);
-
-  useEffect(() => {
-    if (wsStatus === 'connected') {
-      setFallbackStatus(false);
-      return undefined;
-    }
-    const timer = setTimeout(() => setFallbackStatus(true), 2500);
-    return () => clearTimeout(timer);
-  }, [wsStatus]);
-
-  const effectiveWsStatus = wsStatus === 'connected' || fallbackStatus
-    ? 'connected'
-    : wsStatus;
 
   // ── Resolve page title from current path ────────────────────
   const path   = window.location.pathname.replace(/\/$/, '') || '/';
@@ -50,7 +42,8 @@ export default function App() {
   return (
     <BrowserRouter>
       <PageWrapper
-        wsStatus={effectiveWsStatus}
+        wsStatus={wsStatus}
+        lastStreamEvent={lastStreamEvent}
         alerts={alerts}
         pushAlert={pushAlert}
         removeAlert={removeAlert}
@@ -60,13 +53,13 @@ export default function App() {
 }
 
 // Separate component so useLocation() works inside BrowserRouter
-function PageWrapper({ wsStatus, alerts, pushAlert, removeAlert }) {
+function PageWrapper({ wsStatus, lastStreamEvent, alerts, pushAlert, removeAlert }) {
   return (
     <div className="app-shell">
       <Sidebar wsStatus={wsStatus} />
 
       <div className="main-content">
-        <PageTopbar wsStatus={wsStatus} alertCount={alerts.length} />
+        <PageTopbar wsStatus={wsStatus} lastStreamEvent={lastStreamEvent} alertCount={alerts.length} />
 
         <Routes>
           <Route path="/"            element={<Dashboard   wsStatus={wsStatus} pushAlert={pushAlert} />} />
@@ -81,7 +74,7 @@ function PageWrapper({ wsStatus, alerts, pushAlert, removeAlert }) {
 }
 
 // Topbar that reads the current route for title
-function PageTopbar({ wsStatus, alertCount }) {
+function PageTopbar({ wsStatus, lastStreamEvent, alertCount }) {
   const path = window.location.pathname;
   // Match most specific first
   const meta =
@@ -102,6 +95,7 @@ function PageTopbar({ wsStatus, alertCount }) {
       title={meta.title}
       subtitle={meta.subtitle}
       wsStatus={wsStatus}
+      lastStreamEvent={lastStreamEvent}
       alertCount={alertCount}
     />
   );

@@ -93,17 +93,21 @@ export default function Predictions() {
       {evaluation && (
         <div className="evaluation-grid">
           {[
-            ['Offline test', evaluation.offline_test?.metrics?.model, evaluation.offline_test?.metrics?.naive_baseline,
+            ['Offline test', evaluation.offline_test?.metrics?.model,
+              evaluation.offline_test?.metrics?.naive_baseline,
+              evaluation.offline_test?.metrics?.mean_24h,
               `n=${(evaluation.offline_test?.test_size ?? 0)}, ${(evaluation.offline_test?.test_size ?? 0) < 20 ? 'too few to conclude' : 'test-set metrics'}`],
             ['Backtest', evaluation.backtest?.model, evaluation.backtest?.naive_baseline,
+              evaluation.backtest?.mean_24h,
               evaluation.backtest?.label || 'n=0, too few to conclude'],
             ['Stream', evaluation.stream?.model, evaluation.stream?.naive_baseline,
+              evaluation.stream?.mean_24h,
               evaluation.stream?.label || 'n=0, too few to conclude'],
-          ].map(([title, model, baseline, label]) => (
+          ].map(([title, model, baseline, mean24, label]) => (
             <div className="evaluation-card" key={title}>
               <div className="evaluation-card-title">{title}</div>
               {['mae', 'rmse', 'mape'].map((key) => (
-                <div className="evaluation-values" key={key} style={{ marginBottom: 8 }}>
+                <div className="evaluation-values" key={key} style={{ marginBottom: 8, gridTemplateColumns: 'repeat(3, 1fr)' }}>
                   <div>
                     <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
                       {key.toUpperCase()} - Model
@@ -119,6 +123,14 @@ export default function Predictions() {
                     <strong>{baseline?.[key] == null ? '—' : key === 'mape'
                       ? `${Number(baseline[key]).toFixed(2)}%`
                       : `$${Number(baseline[key]).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</strong>
+                  </div>
+                  <div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+                      {key.toUpperCase()} - Mean 24h
+                    </div>
+                    <strong>{mean24?.[key] == null ? '—' : key === 'mape'
+                      ? `${Number(mean24[key]).toFixed(2)}%`
+                      : `$${Number(mean24[key]).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</strong>
                   </div>
                 </div>
               ))}
@@ -193,7 +205,6 @@ export default function Predictions() {
               tick={{ fontSize: 10, fill: '#64748b' }}
               tickLine={false} axisLine={false}
               interval="preserveStartEnd"
-              label={{ value: `Browser local (${browserTimezoneLabel()})`, position: 'insideBottom', offset: -5 }}
             />
             <YAxis
               tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}

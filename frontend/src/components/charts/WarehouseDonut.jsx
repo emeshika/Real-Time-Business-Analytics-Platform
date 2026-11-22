@@ -54,6 +54,7 @@ export default function WarehouseDonut({ data = [] }) {
   data.forEach((d) => {
     const wb = d.warehouse_block_counts || {};
     Object.entries(wb).forEach(([k, v]) => {
+      if (!k || k === 'Unknown') return;
       totals[k] = (totals[k] || 0) + v;
     });
   });

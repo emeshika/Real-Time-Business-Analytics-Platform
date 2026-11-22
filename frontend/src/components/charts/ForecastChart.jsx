@@ -4,8 +4,20 @@ import {
 } from 'recharts';
 import { browserTimezoneLabel } from '../../utils/dateTime';
 
-const fmt = (v) =>
-  v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v?.toFixed(0) ?? 0}`;
+const fmt = (v) => {
+  if (!Number.isFinite(v)) return '$0';
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1)}M`;
+  if (v >= 1000) return `$${(v / 1000).toFixed(v >= 100_000 ? 0 : 1)}K`;
+  return `$${v.toFixed(0)}`;
+};
+const COLOMBO_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Colombo',
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
 
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
@@ -18,7 +30,7 @@ const CustomTooltip = ({ active, payload, label }) => {
       minWidth: 180,
     }}>
       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
-        {label ? `${new Date(label).toLocaleString()} (${browserTimezoneLabel()})` : ''}
+        {label ? `${COLOMBO_FORMATTER.format(new Date(label))} (Asia/Colombo)` : ''}
       </div>
       {payload.map((p) => (
         <div key={p.name} style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 2 }}>
@@ -36,7 +48,11 @@ const CustomTooltip = ({ active, payload, label }) => {
  *   predictions  — array of prediction documents
  */
 export default function ForecastChart({ hourlyData = [], predictions = [] }) {
-  const now = new Date();
+  const newestHourly = hourlyData
+    .map((d) => new Date(d.hour_start))
+    .filter((d) => !Number.isNaN(d.getTime()))
+    .sort((a, b) => b - a)[0];
+  const now = newestHourly || new Date();
   const nowHour = new Date(now);
   nowHour.setUTCMinutes(0, 0, 0);
 
@@ -72,12 +88,22 @@ export default function ForecastChart({ hourlyData = [], predictions = [] }) {
     ...Object.keys(actualMap),
     ...Object.keys(predMap),
   ])).sort();
-
-  const chartData = allKeys.slice(-16).map((time) => ({
+  const windowStart = new Date(nowHour.getTime() - 23 * 60 * 60 * 1000);
+  const last24Keys = allKeys.filter((time) => {
+    const value = new Date(time);
+    return value >= windowStart && value <= nowHour;
+  });
+  const chartData = last24Keys.map((time) => ({
     time,
     actual:    actualMap[time]    ?? null,
     predicted: predMap[time]      ?? null,
   }));
+
+  if (!chartData.length) return (
+    <div style={{ height: 220, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
+      No data in this window
+    </div>
+  );
 
   return (
     <ResponsiveContainer width="100%" height={220}>
@@ -92,12 +118,8 @@ export default function ForecastChart({ hourlyData = [], predictions = [] }) {
         <XAxis
           dataKey="time"
           tickFormatter={(value) =>
-            new Date(value).toLocaleString('en-US', {
-              month: 'short', day: 'numeric', hour: '2-digit', hour12: false,
-              timeZoneName: 'short',
-            })
+            COLOMBO_FORMATTER.format(new Date(value))
           }
-          label={{ value: `Browser local time (${browserTimezoneLabel()})`, position: 'insideBottom', offset: -5 }}
           tick={{ fontSize: 10, fill: '#64748b' }}
           tickLine={false}
           axisLine={false}

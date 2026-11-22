@@ -68,39 +68,44 @@ class WebSocketService {
   }
 
   _doConnect() {
-    this._setStatus('connecting');
-    try {
-      this._ws = new WebSocket(WS_URL);
-    } catch {
-      this._scheduleRetry();
-      return;
-    }
-
-    this._ws.onopen = () => {
-      console.info('[PulseBI WS] Connected');
-      this._retryCount = 0;
-      this._setStatus('connected');
-    };
-
-    this._ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg?.type) this._emit(msg.type, msg.data ?? msg);
-      } catch {
-        console.warn('[PulseBI WS] Unparseable message:', event.data);
-      }
-    };
-
-    this._ws.onerror = (err) => {
-      console.warn('[PulseBI WS] Error:', err);
-    };
-
-    this._ws.onclose = (evt) => {
-      this._setStatus('disconnected');
-      console.info(`[PulseBI WS] Closed (code=${evt.code})`);
-      if (!this._intentionalClose) this._scheduleRetry();
-    };
+  this._setStatus('connecting');
+  let ws;
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch {
+    this._scheduleRetry();
+    return;
   }
+  this._ws = ws;
+
+  ws.onopen = () => {
+    if (this._ws !== ws) { ws.close(); return; }   // stale socket
+    console.info('[PulseBI WS] Connected');
+    this._retryCount = 0;
+    this._setStatus('connected');
+  };
+
+  ws.onmessage = (event) => {
+    if (this._ws !== ws) return;                    // ignore stale socket
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg?.type) this._emit(msg.type, msg.data ?? msg);
+    } catch {
+      console.warn('[PulseBI WS] Unparseable message:', event.data);
+    }
+  };
+
+  ws.onerror = (err) => {
+    if (this._ws === ws) console.warn('[PulseBI WS] Error:', err);
+  };
+
+  ws.onclose = (evt) => {
+    if (this._ws !== ws) return;                    // old socket: no retry
+    this._setStatus('disconnected');
+    console.info(`[PulseBI WS] Closed (code=${evt.code})`);
+    if (!this._intentionalClose) this._scheduleRetry();
+  };
+}
 
   _scheduleRetry() {
     if (this._retryCount >= MAX_RETRIES) {

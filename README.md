@@ -73,7 +73,7 @@ The React app has three routes:
 
 ### Screenshots
 
-No screenshot files currently exist in `docs/screenshots/`. The repository therefore does not embed any screenshots. When captured, PNGs can be stored in `docs/screenshots/` and linked from this section.
+No PNG files currently exist in `docs/screenshots/`, so no dashboard screenshots are embedded. This README does not use fabricated or external screenshot images.
 
 ## Dataset
 
@@ -82,6 +82,7 @@ No screenshot files currently exist in `docs/screenshots/`. The repository there
 - **Local CSV:** `backend/data/business_dataset.csv`
 - **Rows:** 10,999 data rows plus one header
 - **Replay behavior:** `stream_generator.py` reads the CSV, yields each row as JSON, and repeats the loop with a 1-second delay
+- **Hourly volume:** `EVENTS_PER_HOUR=3600` matches the live 1-row-per-second replay. The 30-day seed backfill creates 720 hourly aggregates at this volume.
 - **Main columns:** `ID`, `Warehouse_block`, `Mode_of_Shipment`, `Customer_care_calls`, `Customer_rating`, `Cost_of_the_Product`, `Prior_purchases`, `Product_importance`, `Gender`, `Discount_offered`, `Weight_in_gms`, `Reached.on.Time_Y.N`
 
 The replay assigns the CSV `ID` value from the `ID` column. Only `timestamp` is generated for the live stream event.
@@ -133,14 +134,34 @@ Training uses all available documents in `hourly_metrics`, sorted by timestamp, 
 
 `backend/analytics_ml/train_model.py` writes `backend/analytics_ml/models/metrics.json`. The checked-in offline metrics were produced from 573 training rows and 144 test rows (`n=144`) over the date range `2026-10-21T18:00:00` to `2026-11-20T14:00:00`:
 
-| Metric | XGBoost | Naive baseline (previous hour) |
-|---|---:|---:|
-| MAE | 80.6385 | 253.1528 |
-| RMSE | 113.0363 | 344.1065 |
-| MAPE | 2.4330% | 7.7686% |
-| R2 | 0.9039 | Not calculated |
+| Metric | XGBoost | Previous hour | Mean 24h |
+|---|---:|---:|---:|
+| MAE | 2562.4735 | 3200.0694 | 2574.4201 |
+| RMSE | 3180.6598 | 3996.6639 | 3105.8231 |
+| MAPE | 0.3386% | 0.4228% | 0.3402% |
+| R2 | Not calculated | Not calculated | Not calculated |
+
+Backtest population: `n=144` completed next-hour targets. The model beats the previous-hour baseline on MAE/RMSE/MAPE, but mean-24h has lower RMSE and near-equal MAPE/MAE.
+
+Offline test-set metrics (secondary, 572 training / 144 test):
+
+| Metric | XGBoost | Previous hour | Mean 24h |
+|---|---:|---:|---:|
+| MAE | 2642.0972 | 3637.3958 | 2574.4201 |
+| RMSE | 3244.9278 | 4486.8549 | 3105.8231 |
+| MAPE | 0.3492% | 0.4806% | 0.3402% |
+| R2 | -0.1618 | Not calculated | Not calculated |
+
+Hourly revenue is nearly constant because each seeded hour contains 3,600 sampled
+CSV rows. The observed hourly changes are typically about +/-0.4%, so forecasting
+skill is not a real-world claim.
 
 The naive baseline predicts that next-hour revenue equals the previous completed hour's `total_cost`. Live matched metrics are available from `GET /api/predictions/evaluation`.
+
+Training and backtest use leak-free next-hour alignment: for row hour `t`, the
+target is `total_cost(t+1)` and only metrics from `t` and earlier are features.
+The target hour calendar fields come from `t+1`. Cost lags and rolling features
+are shifted so they do not include the target hour.
 
 ## Technology Stack
 

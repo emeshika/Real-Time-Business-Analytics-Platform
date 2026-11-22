@@ -27,7 +27,7 @@ load_dotenv(override=True)
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
 DEFAULT_MONGODB_URI = (
-    "mongodb+srv://sandudul_db_user:WMDCHXt2h7ASSmSy@cluster0.apfqidv.mongodb.net/"
+    "mongodb://localhost:27017"
 )
 DEFAULT_DATABASE_NAME = "stream_analytics"
 DEFAULT_TRANSACTIONS_COLLECTION = "transactions"

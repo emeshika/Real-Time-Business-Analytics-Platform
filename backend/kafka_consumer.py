@@ -32,6 +32,7 @@ from database import (
     build_metric_delta,
     create_hourly_alerts,
 )
+from data_mapping import kaggle_to_on_time
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -158,7 +159,10 @@ def clean_data(data):
     cleaned["customer_care_calls"] = coerce_int(cleaned.get("customer_care_calls"))
     cleaned["customer_rating"] = coerce_int(cleaned.get("customer_rating"))
     cleaned["prior_purchases"] = coerce_int(cleaned.get("prior_purchases"))
-    cleaned["reached_on_time"] = coerce_int(cleaned.get("reached_on_time"))
+    if "kaggle_reached_on_time" in cleaned:
+        cleaned["reached_on_time"] = kaggle_to_on_time(cleaned["kaggle_reached_on_time"])
+    else:
+        cleaned["reached_on_time"] = coerce_int(cleaned.get("reached_on_time"))
     cleaned["cost_of_product"] = coerce_float(cleaned.get("cost_of_product"))
     cleaned["discount_offered"] = coerce_float(cleaned.get("discount_offered"))
     cleaned["weight_in_gms"] = coerce_float(cleaned.get("weight_in_gms"))

@@ -82,6 +82,8 @@ def get_prediction_evaluation(limit: int = Query(default=200, ge=1, le=1000)):
         model_predicted = []
         naive_actual = []
         naive_predicted = []
+        mean24_actual = []
+        mean24_predicted = []
         evaluated = []
 
         for prediction in predictions:
@@ -102,11 +104,26 @@ def get_prediction_evaluation(limit: int = Query(default=200, ge=1, le=1000)):
             if naive is not None:
                 naive_actual.append(actual)
                 naive_predicted.append(naive)
+            previous_docs = list(
+                get_hourly_col()
+                .find({"hour_start": {"$lt": target}})
+                .sort("hour_start", -1)
+                .limit(24)
+            )
+            previous_costs = [
+                float(doc.get("total_cost", 0.0) or 0.0)
+                for doc in previous_docs
+            ]
+            mean24 = sum(previous_costs) / len(previous_costs) if previous_costs else None
+            if mean24 is not None:
+                mean24_actual.append(actual)
+                mean24_predicted.append(mean24)
             evaluated.append({
                 "target_hour": target.isoformat().replace("+00:00", "Z"),
                 "actual_revenue": actual,
                 "model_predicted": predicted,
                 "naive_predicted": naive,
+                "mean24_predicted": mean24,
             })
 
         n = len(evaluated)
@@ -123,6 +140,11 @@ def get_prediction_evaluation(limit: int = Query(default=200, ge=1, le=1000)):
                 "mae": mean_absolute_error(naive_actual, naive_predicted),
                 "rmse": root_mean_squared_error(naive_actual, naive_predicted),
                 "mape": mean_absolute_percentage_error(naive_actual, naive_predicted),
+            },
+            "mean_24h": {
+                "mae": mean_absolute_error(mean24_actual, mean24_predicted),
+                "rmse": root_mean_squared_error(mean24_actual, mean24_predicted),
+                "mape": mean_absolute_percentage_error(mean24_actual, mean24_predicted),
             },
             "evaluated": evaluated,
         }

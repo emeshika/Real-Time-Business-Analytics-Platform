@@ -23,7 +23,7 @@ MODEL_PATH = os.path.join(
 )
 MONGO_URI = os.getenv(
     "MONGODB_URI",
-    "mongodb+srv://sandudul_db_user:WMDCHXt2h7ASSmSy@cluster0.apfqidv.mongodb.net/"
+    "mongodb://localhost:27017"
 )
 
 # ─────────────────────────────────────────────────────────────────
@@ -57,6 +57,11 @@ print("\n[2/3] Connecting to MongoDB Atlas...")
 client = MongoClient(MONGO_URI)
 db     = client["stream_analytics"]
 print("      ✓ Connected.")
+db.predictions.create_index(
+    [("target_hour", 1), ("source", 1)],
+    unique=True,
+    partialFilterExpression={"source": {"$in": ["stream", "backtest"]}},
+)
 
 # ─────────────────────────────────────────────────────────────────
 # Helper functions
@@ -94,7 +99,12 @@ def build_feature_row(docs):
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     latest = df.iloc[-1]
-    ts     = pd.to_datetime(latest["timestamp"])
+    base_ts = pd.to_datetime(latest["timestamp"])
+    if base_ts.tzinfo is None:
+        base_ts = base_ts.tz_localize("UTC")
+    else:
+        base_ts = base_ts.tz_convert("UTC")
+    ts = base_ts + pd.Timedelta(hours=1)
 
     # Build the same features that train_model.py used
     row = {
@@ -105,10 +115,11 @@ def build_feature_row(docs):
         "hour"               : ts.hour,
         "day_of_week"        : ts.day_of_week,
         "day_of_month"       : ts.day,
-        "lag_1h"             : float(df["total_cost"].iloc[-1]) if "total_cost" in df.columns else 0.0,
-        "lag_2h"             : float(df["total_cost"].iloc[-2]) if len(df) >= 2 and "total_cost" in df.columns else 0.0,
-        "lag_3h"             : float(df["total_cost"].iloc[-3]) if len(df) >= 3 and "total_cost" in df.columns else 0.0,
-        "rolling_3h_mean"    : float(df["total_cost"].tail(3).mean()) if "total_cost" in df.columns else 0.0,
+        "is_weekend"         : int(ts.day_of_week >= 5),
+        "lag_1h"             : float(df["total_cost"].iloc[-2]) if len(df) >= 2 and "total_cost" in df.columns else 0.0,
+        "lag_2h"             : float(df["total_cost"].iloc[-3]) if len(df) >= 3 and "total_cost" in df.columns else 0.0,
+        "lag_3h"             : float(df["total_cost"].iloc[-4]) if len(df) >= 4 and "total_cost" in df.columns else 0.0,
+        "rolling_3h_mean"    : float(df["total_cost"].iloc[-4:-1].mean()) if len(df) >= 4 and "total_cost" in df.columns else 0.0,
     }
 
     # Build DataFrame with only the columns the model expects, in correct order
@@ -123,8 +134,12 @@ def build_feature_row(docs):
 def save_prediction_to_db(output_dict):
     """Save the prediction JSON into MongoDB for Team 04's API to read."""
     record = {**output_dict, "saved_at": datetime.now(timezone.utc)}
-    result = db.predictions.insert_one(record)
-    return str(result.inserted_id)
+    result = db.predictions.update_one(
+        {"target_hour": record["target_hour"], "source": "stream"},
+        {"$set": record},
+        upsert=True,
+    )
+    return str(result.upserted_id or "existing")
 
 
 # ─────────────────────────────────────────────────────────────────

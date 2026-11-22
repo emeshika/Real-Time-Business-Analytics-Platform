@@ -1,15 +1,20 @@
 import csv
 import json
 import time
+import random
+from data_mapping import kaggle_to_on_time
+from config import EVENTS_PER_HOUR
 from datetime import datetime, timezone
 
 def generate_messages(delay_seconds=1.0, loop=True):
     csv_file_path = "data/business_dataset.csv"
     
+    rng = random.Random(42)
     while loop:
         with open(csv_file_path, mode='r', encoding='utf-8') as file:
-            csv_reader = csv.DictReader(file) 
-            for row in csv_reader:
+            rows = list(csv.DictReader(file))
+            rng.shuffle(rows)
+            for row in rows:
                 
                 row_clean = {k.strip().lower(): v for k, v in row.items() if k is not None}
                 
@@ -37,7 +42,7 @@ def generate_messages(delay_seconds=1.0, loop=True):
                     "weight_in_gms": float(row_clean.get("weight_in_gms", 0.0)) if row_clean.get("weight_in_gms") else None,
                     
                     
-                    "reached_on_time": int(row_clean.get("reached.on.time_y.n", 0)) if row_clean.get("reached.on.time_y.n") else None,
+                    "reached_on_time": kaggle_to_on_time(row_clean.get("reached.on.time_y.n")),
                     
                     "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 }

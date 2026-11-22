@@ -110,23 +110,44 @@ def _build_update(time_key, time_value, metrics_delta, source="stream"):
     gender = metrics_delta.get("gender", "Unknown")
     importance = metrics_delta.get("product_importance", "Unknown")
 
+    total_transactions = int(metrics_delta.get("total_transactions", 1))
     update = {
         "$setOnInsert": {time_key: time_value, "created_at": now, "source": source},
         "$inc": {
-            "total_transactions": 1,
+            "total_transactions": total_transactions,
             "total_cost": float(metrics_delta.get("total_cost", 0.0)),
             "discount_sum": float(metrics_delta.get("discount_sum", 0.0)),
             "on_time_sum": int(metrics_delta.get("on_time_sum", 0)),
             "rating_sum": int(metrics_delta.get("rating_sum", 0)),
             "total_weight": float(metrics_delta.get("total_weight", 0.0)),
             # Categorical breakdowns via dot-notation
-            f"shipment_mode_counts.{shipment_mode}": 1,
-            f"warehouse_block_counts.{warehouse}": 1,
-            f"gender_counts.{gender}": 1,
-            f"product_importance_counts.{importance}": 1,
         },
         "$set": {"updated_at": now},
     }
+    shipment_counts = metrics_delta.get("shipment_mode_counts")
+    if isinstance(shipment_counts, dict):
+        for name, count in shipment_counts.items():
+            update["$inc"][f"shipment_mode_counts.{name}"] = int(count)
+    else:
+        update["$inc"][f"shipment_mode_counts.{shipment_mode}"] = 1
+    warehouse_counts = metrics_delta.get("warehouse_block_counts")
+    if isinstance(warehouse_counts, dict):
+        for name, count in warehouse_counts.items():
+            update["$inc"][f"warehouse_block_counts.{name}"] = int(count)
+    else:
+        update["$inc"][f"warehouse_block_counts.{warehouse}"] = 1
+    gender_counts = metrics_delta.get("gender_counts")
+    if isinstance(gender_counts, dict):
+        for name, count in gender_counts.items():
+            update["$inc"][f"gender_counts.{name}"] = int(count)
+    else:
+        update["$inc"][f"gender_counts.{gender}"] = 1
+    importance_counts = metrics_delta.get("product_importance_counts")
+    if isinstance(importance_counts, dict):
+        for name, count in importance_counts.items():
+            update["$inc"][f"product_importance_counts.{name}"] = int(count)
+    else:
+        update["$inc"][f"product_importance_counts.{importance}"] = 1
     return update
 
 

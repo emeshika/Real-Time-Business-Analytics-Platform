@@ -44,7 +44,7 @@ print("\n[1/6] Connecting to MongoDB Atlas...")
 
 MONGO_URI = os.getenv(
     "MONGODB_URI",
-    "mongodb+srv://sandudul_db_user:WMDCHXt2h7ASSmSy@cluster0.apfqidv.mongodb.net/"
+    "mongodb://localhost:27017"
 )
 client = MongoClient(MONGO_URI)
 db = client["stream_analytics"]
@@ -101,19 +101,20 @@ print(f"      Date range       : {df['timestamp'].min()} → {df['timestamp'].ma
 # ─────────────────────────────────────────────────────────────────
 print("\n[4/6] Engineering time and lag features...")
 
-# Time-based features extracted from the timestamp
-df["hour"]          = df["timestamp"].dt.hour
-df["day_of_week"]   = df["timestamp"].dt.day_of_week    # 0=Mon, 6=Sun
-df["day_of_month"]  = df["timestamp"].dt.day
-df["is_weekend"]    = (df["day_of_week"] >= 5).astype(int)
+# The forecast target is hour t+1. Calendar features describe the target hour.
+df["target_hour"] = df["timestamp"].shift(-1)
+df["target_total_cost"] = df["total_cost"].shift(-1)
 
-# Lag features — total_cost from previous hours
-df["lag_1h"]  = df["total_cost"].shift(1)   # 1 hour ago
-df["lag_2h"]  = df["total_cost"].shift(2)   # 2 hours ago
-df["lag_3h"]  = df["total_cost"].shift(3)   # 3 hours ago
+# Features use hour t and earlier only. Every cost-derived feature is shifted.
+df["lag_1h"] = df["total_cost"].shift(1)
+df["lag_2h"] = df["total_cost"].shift(2)
+df["lag_3h"] = df["total_cost"].shift(3)
+df["rolling_3h_mean"] = df["total_cost"].shift(1).rolling(window=3).mean()
 
-# Rolling average of past 3 hours
-df["rolling_3h_mean"] = df["total_cost"].rolling(window=3).mean()
+df["hour"] = df["target_hour"].dt.hour
+df["day_of_week"] = df["target_hour"].dt.day_of_week
+df["day_of_month"] = df["target_hour"].dt.day
+df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
 
 # Drop rows that now have NaN due to lag/rolling
 df = df.dropna().reset_index(drop=True)
@@ -139,7 +140,7 @@ ALL_FEATURES = (
 
 # Only keep features that actually exist in df
 FINAL_FEATURES = [f for f in ALL_FEATURES if f in df.columns]
-TARGET = "total_cost"
+TARGET = "target_total_cost"
 
 print(f"      Features used    : {FINAL_FEATURES}")
 print(f"      Target variable  : {TARGET}")
@@ -174,11 +175,20 @@ if len(X_test) > 0:
     r2     = r2_score(y_test, y_pred)
     rmse   = root_mean_squared_error(y_test, y_pred)
     mape   = mean_absolute_percentage_error(y_test, y_pred)
-    baseline_predicted = y.iloc[split_idx - 1:-1].tolist()
+    baseline_predicted = df.iloc[split_idx:]["total_cost"].tolist()
     baseline_actual = y_test.tolist()
     baseline_mae = calculate_mae(baseline_actual, baseline_predicted)
     baseline_rmse = root_mean_squared_error(baseline_actual, baseline_predicted)
     baseline_mape = mean_absolute_percentage_error(baseline_actual, baseline_predicted)
+    mean24_predicted = [
+        float(df.iloc[max(0, i - 24):i]["total_cost"].mean())
+        for i in range(split_idx, len(df))
+        if i > 0
+    ]
+    mean24_actual = y_test.iloc[-len(mean24_predicted):].tolist()
+    mean24_mae = calculate_mae(mean24_actual, mean24_predicted)
+    mean24_rmse = root_mean_squared_error(mean24_actual, mean24_predicted)
+    mean24_mape = mean_absolute_percentage_error(mean24_actual, mean24_predicted)
     print(f"\n      ── Evaluation Results ──────────────────")
     print(f"      MAE (Mean Absolute Error)  : {mae:,.2f}")
     print(f"      RMSE                       : {rmse:,.2f}")
@@ -193,6 +203,7 @@ if len(X_test) > 0:
         print(f"      Model quality              : ✗ Needs more data")
 else:
     rmse = mape = baseline_mae = baseline_rmse = baseline_mape = None
+    mean24_mae = mean24_rmse = mean24_mape = None
     r2 = None
     print("      (Skipping evaluation — not enough data for a test split)")
 
@@ -242,6 +253,11 @@ metrics = {
             "rmse": float(baseline_rmse) if baseline_rmse is not None else None,
             "mape": float(baseline_mape) if baseline_mape is not None else None,
         },
+        "mean_24h": {
+            "mae": float(mean24_mae) if mean24_mae is not None else None,
+            "rmse": float(mean24_rmse) if mean24_rmse is not None else None,
+            "mape": float(mean24_mape) if mean24_mape is not None else None,
+        },
     },
 }
 METRICS_PATH = os.path.join(MODEL_DIR, "metrics.json")
@@ -252,6 +268,10 @@ with open(METRICS_PATH, "w", encoding="utf-8") as metrics_file:
 predictions_col = db["predictions"]
 predictions_col.delete_many({"source": "backtest"})
 backtest_docs = []
+backtest_actual = []
+backtest_predicted = []
+backtest_baseline = []
+backtest_mean24 = []
 for test_index in range(split_idx, len(df)):
     walk_model = XGBRegressor(
         n_estimators=300,
@@ -263,16 +283,30 @@ for test_index in range(split_idx, len(df)):
         random_state=42,
         verbosity=0,
     )
-    walk_model.fit(X.iloc[:test_index], y.iloc[:test_index])
-    predicted_cost = max(0.0, float(walk_model.predict(X.iloc[[test_index]])[0]))
+    feature_index = test_index - 1
+    if feature_index < 3:
+        continue
+    walk_model.fit(X.iloc[:feature_index], y.iloc[:feature_index])
+    predicted_cost = max(0.0, float(walk_model.predict(X.iloc[[feature_index]])[0]))
+    actual_cost = float(y.iloc[test_index])
+    backtest_actual.append(actual_cost)
+    backtest_predicted.append(predicted_cost)
+    backtest_baseline.append(float(df.iloc[test_index - 1]["total_cost"]))
+    mean_start = max(0, test_index - 24)
+    backtest_mean24.append(float(df.iloc[mean_start:test_index]["total_cost"].mean()))
 
-    based_on = df.iloc[test_index]["timestamp"]
+    based_on = df.iloc[feature_index]["timestamp"]
     if hasattr(based_on, "tzinfo") and based_on.tzinfo is not None:
         based_on_utc = based_on.tz_convert("UTC") if hasattr(based_on, "tz_convert") else based_on.astimezone(timezone.utc)
     else:
         based_on_utc = based_on.tz_localize("UTC")
     based_on_iso = based_on_utc.isoformat().replace("+00:00", "Z")
-    target_hour = (based_on_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    target_hour = pd.to_datetime(df.iloc[feature_index]["target_hour"])
+    if target_hour.tzinfo is None:
+        target_hour = target_hour.tz_localize("UTC")
+    else:
+        target_hour = target_hour.tz_convert("UTC")
+    target_hour = target_hour.replace(minute=0, second=0, microsecond=0)
     backtest_docs.append({
         "predicted_total_cost_next_hour": round(predicted_cost, 2),
         "prediction_time": based_on_iso,
@@ -288,6 +322,30 @@ for test_index in range(split_idx, len(df)):
 
 if backtest_docs:
     predictions_col.insert_many(backtest_docs)
+
+backtest_metrics = {
+    "n": len(backtest_docs),
+    "model": {
+        "mae": calculate_mae(backtest_actual, backtest_predicted) if backtest_actual else None,
+        "rmse": root_mean_squared_error(backtest_actual, backtest_predicted) if backtest_actual else None,
+        "mape": mean_absolute_percentage_error(backtest_actual, backtest_predicted) if backtest_actual else None,
+    },
+    "naive_baseline": {
+        "mae": calculate_mae(backtest_actual, backtest_baseline) if backtest_actual else None,
+        "rmse": root_mean_squared_error(backtest_actual, backtest_baseline) if backtest_actual else None,
+        "mape": mean_absolute_percentage_error(backtest_actual, backtest_baseline) if backtest_actual else None,
+    },
+    "mean_24h": {
+        "mae": calculate_mae(backtest_actual, backtest_mean24) if backtest_actual else None,
+        "rmse": root_mean_squared_error(backtest_actual, backtest_mean24) if backtest_actual else None,
+        "mape": mean_absolute_percentage_error(backtest_actual, backtest_mean24) if backtest_actual else None,
+    },
+}
+with open(METRICS_PATH, "r", encoding="utf-8") as metrics_file:
+    metrics = json.load(metrics_file)
+metrics["backtest"] = backtest_metrics
+with open(METRICS_PATH, "w", encoding="utf-8") as metrics_file:
+    json.dump(metrics, metrics_file, indent=2)
 
 print(f"      ✓ Saved to : {MODEL_PATH}")
 print("\n" + "="*55)

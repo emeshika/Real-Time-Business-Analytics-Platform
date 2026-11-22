@@ -4,8 +4,11 @@ No transaction, hourly, daily, or prediction values are invented. Rows are sampl
 from the CSV and passed through the same aggregation helpers used by the consumer.
 """
 
-import csv
 import os
+import random
+import csv
+import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -16,6 +19,8 @@ from database import (
     update_daily_metrics,
     update_hourly_metrics,
 )
+from data_mapping import kaggle_to_on_time
+from config import EVENTS_PER_HOUR
 
 load_dotenv(override=True)
 
@@ -23,7 +28,6 @@ MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 DB_NAME = os.getenv("MONGODB_DATABASE", "stream_analytics")
 CSV_PATH = os.path.join(os.path.dirname(__file__), "data", "business_dataset.csv")
 HISTORY_HOURS = 30 * 24
-ROWS_PER_HOUR = 15
 
 
 def utc_iso(value):
@@ -53,7 +57,7 @@ def csv_row_to_event(row, event_time):
         "gender": row["Gender"],
         "discount_offered": float(row["Discount_offered"]),
         "weight_in_gms": float(row["Weight_in_gms"]),
-        "reached_on_time": int(row["Reached.on.Time_Y.N"]),
+        "reached_on_time": kaggle_to_on_time(row["Reached.on.Time_Y.N"]),
         "timestamp": utc_iso(event_time),
     }
     event["event_time"] = event_time
@@ -86,34 +90,59 @@ if not rows:
 
 now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 history_start = now - timedelta(hours=HISTORY_HOURS)
-sample_count = HISTORY_HOURS * ROWS_PER_HOUR
+frame = pd.DataFrame(rows)
+frame["Cost_of_the_Product"] = pd.to_numeric(frame["Cost_of_the_Product"])
+frame["Discount_offered"] = pd.to_numeric(frame["Discount_offered"])
+frame["Customer_rating"] = pd.to_numeric(frame["Customer_rating"])
+frame["Weight_in_gms"] = pd.to_numeric(frame["Weight_in_gms"])
 
-transactions = []
-for offset in range(sample_count):
-    row = rows[offset % len(rows)]
-    event_time = history_start + timedelta(minutes=4 * offset)
-    event = csv_row_to_event(row, event_time)
-    transactions.append(event)
+sample_rng = np.random.default_rng(42)
+latest_transactions = []
 
-    delta = build_metric_delta(event)
-    updated_hour = update_hourly_metrics(
-        hourly_col,
-        event["hour_start"],
-        delta,
-        source="seed_csv",
-    )
-    update_daily_metrics(
-        daily_col,
-        event["date_start"],
-        delta,
-        source="seed_csv",
-    )
+for hour_offset in range(HISTORY_HOURS):
+    hour_start = history_start + timedelta(hours=hour_offset)
+    sampled = frame.iloc[
+        sample_rng.integers(0, len(frame), size=EVENTS_PER_HOUR)
+    ]
 
-if transactions:
-    transactions_col.insert_many(transactions)
+    count = len(sampled)
+    on_time_flags = np.array([
+        kaggle_to_on_time(value)
+        for value in sampled["Reached.on.Time_Y.N"].to_numpy()
+    ])
+    mode_counts = sampled["Mode_of_Shipment"].value_counts().to_dict()
+    warehouse_counts = sampled["Warehouse_block"].value_counts().to_dict()
+    gender_counts = sampled["Gender"].value_counts().to_dict()
+    importance_counts = sampled["Product_importance"].value_counts().to_dict()
+
+    delta = {
+        "total_transactions": count,
+        "total_cost": float(sampled["Cost_of_the_Product"].sum()),
+        "discount_sum": float(sampled["Discount_offered"].sum()),
+        "on_time_sum": int(on_time_flags.sum()),
+        "rating_sum": int(sampled["Customer_rating"].sum()),
+        "total_weight": float(sampled["Weight_in_gms"].sum()),
+        "shipment_mode_counts": mode_counts,
+        "warehouse_block_counts": warehouse_counts,
+        "gender_counts": gender_counts,
+        "product_importance_counts": importance_counts,
+    }
+    update_hourly_metrics(hourly_col, hour_start, delta, source="seed_csv")
+    update_daily_metrics(daily_col, hour_start.replace(hour=0, minute=0, second=0, microsecond=0), delta, source="seed_csv")
+
+    if hour_offset >= HISTORY_HOURS - 1:
+        minute = hour_start
+        for _, row in sampled.tail(500).iterrows():
+            minute = minute + timedelta(milliseconds=1)
+            event = csv_row_to_event(row.to_dict(), minute)
+            latest_transactions.append(event)
+
+if latest_transactions:
+    transactions_col.insert_many(latest_transactions)
 
 print("Seed complete")
-print(f"Rows sampled: {len(transactions)}")
+print(f"Rows sampled: {HISTORY_HOURS * EVENTS_PER_HOUR}")
+print(f"Latest raw transaction rows: {len(latest_transactions)}")
 print(f"Hourly documents: {hourly_col.count_documents({})}")
 print(f"Daily documents: {daily_col.count_documents({})}")
 print("Predictions: backtest predictions are created by train_model.py")

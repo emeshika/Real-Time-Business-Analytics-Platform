@@ -56,7 +56,8 @@ export default function Analytics() {
       rating: d.avg_rating || 0,
       discount: d.avg_discount || 0,
       onTime: (d.on_time_rate || 0) * 100,
-      inProgress: (d.total_transactions || 0) < EVENTS_PER_DAY * COMPLETE_HOUR_RATIO,
+      inProgress: new Date(d.date_start).toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10),
+      partial: (d.total_transactions || 0) < EVENTS_PER_DAY * COMPLETE_HOUR_RATIO,
     }));
 
   // Radar: latest COMPLETE hour (the hour in progress would look tiny).
@@ -189,9 +190,8 @@ export default function Analytics() {
                 <tr key={d.day}>
                   <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                     {d.day}
-                    {d.inProgress && (
-                      <span className="badge badge-info" style={{ marginLeft: 8 }}>in progress</span>
-                    )}
+                    {d.inProgress && <span className="badge badge-info" style={{ marginLeft: 8 }}>in progress</span>}
+                    {!d.inProgress && d.partial && <span className="badge badge-warning" style={{ marginLeft: 8 }}>partial data</span>}
                   </td>
                   <td style={{ color: 'var(--success)', fontWeight: 600 }}>{formatMoney(d.revenue)}</td>
                   <td>{d.orders.toLocaleString()}</td>

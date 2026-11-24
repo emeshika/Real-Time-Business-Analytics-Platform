@@ -10,6 +10,8 @@ import wsService from '../services/websocket';
 import { browserTimezoneLabel, formatBrowserDateTime } from '../utils/dateTime';
 import { isCompleteHour } from '../utils/format';
 
+const [coverage, setCoverage] = useState({ current: 0, previous: 0 });
+
 const fmt = (n) =>
   n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` :
   n >= 1_000     ? `$${(n / 1_000).toFixed(1)}K` :
@@ -101,6 +103,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
       setTransactions(t);
       setPredictions(p);
       setKpis(computeKPIs(currentWindow));
+      setCoverage({ current: currentWindow.length, previous: previousWindow.length });
       setApiError(false);
     } catch {
       // Keep whatever was last loaded and tell the user, instead of
@@ -190,10 +193,11 @@ export default function Dashboard({ wsStatus, pushAlert }) {
     return { text: `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`, dir: pct > 0 ? 'up' : 'down' };
   };
 
-  const revChange = kpiChange(kpis.totalRevenue, prevKpis?.totalRevenue);
-  const ordChange = kpiChange(kpis.totalOrders,  prevKpis?.totalOrders);
-  const ratChange = kpiChange(kpis.avgRating,    prevKpis?.avgRating);
-  const ottChange = kpiChange(kpis.onTimeRate,   prevKpis?.onTimeRate);
+  const perHour = (value, hours) => (hours && value != null ? value / hours : null);
+  const revChange = kpiChange(perHour(kpis.totalRevenue, coverage.current), perHour(prevKpis?.totalRevenue, coverage.previous));
+  const ordChange = kpiChange(perHour(kpis.totalOrders, coverage.current), perHour(prevKpis?.totalOrders, coverage.previous));
+  const ratChange = kpiChange(kpis.avgRating, prevKpis?.avgRating);
+  const ottChange = kpiChange(kpis.onTimeRate, prevKpis?.onTimeRate);
 
   if (loading) {
     return (
@@ -264,6 +268,12 @@ export default function Dashboard({ wsStatus, pushAlert }) {
           iconBg="rgba(16,185,129,0.15)"
         />
       </div>
+      {coverage.current > 0 && coverage.current < 24 && (
+        <div className="chart-subtitle" style={{ marginBottom: 16 }}>
+          KPIs cover {coverage.current} of the last 24 hours (hours with missing or incomplete stream data are excluded).
+          Change vs previous period compares per-hour averages.
+        </div>
+      )}
 
       {/* ── Main Charts Row ─────────────────────────────────── */}
       <div className="charts-grid">

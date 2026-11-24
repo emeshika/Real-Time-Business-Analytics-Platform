@@ -230,12 +230,17 @@ def build_metric_delta(cleaned):
 
 
 def create_hourly_alerts(alerts_col, hourly_col, hour_start, hourly_doc):
-    """Create cooldowned operational alerts after an hourly metric update."""
+    """Evaluate the last COMPLETED hour (never the hour still in progress)."""
     from datetime import timedelta
+    from config import is_complete_hour
 
-    alerts = []
-    hour_iso = hour_start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    on_time_rate = float(hourly_doc.get("on_time_rate", 0.0) or 0.0) * 100
+    target = hour_start - timedelta(hours=1)
+    current = hourly_col.find_one({"hour_start": target})
+    if not current or not is_complete_hour(current.get("total_transactions")):
+        return []
+
+    hour_iso = target.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    on_time_rate = float(current.get("on_time_rate", 0.0) or 0.0) * 100
 
     rules = []
     if on_time_rate < 65:
@@ -245,22 +250,22 @@ def create_hourly_alerts(alerts_col, hourly_col, hour_start, hourly_doc):
             "message": f"Hourly on-time delivery is {on_time_rate:.1f}% (below 65%).",
         })
 
-    previous_hour = hour_start - timedelta(hours=1)
-    previous = hourly_col.find_one({"hour_start": previous_hour})
-    current_revenue = float(hourly_doc.get("total_cost", 0.0) or 0.0)
-    previous_revenue = float(previous.get("total_cost", 0.0) or 0.0) if previous else None
-    if previous_revenue not in (None, 0):
-        drop_pct = (current_revenue - previous_revenue) / previous_revenue * 100
-        if drop_pct <= -40:
-            rules.append({
-                "rule": "hourly_revenue_drop",
-                "severity": "high",
-                "message": f"Hourly revenue dropped {abs(drop_pct):.1f}% versus the previous completed hour.",
-            })
+    previous = hourly_col.find_one({"hour_start": target - timedelta(hours=1)})
+    if previous and is_complete_hour(previous.get("total_transactions")):
+        current_revenue = float(current.get("total_cost", 0.0) or 0.0)
+        previous_revenue = float(previous.get("total_cost", 0.0) or 0.0)
+        if previous_revenue:
+            drop_pct = (current_revenue - previous_revenue) / previous_revenue * 100
+            if drop_pct <= -40:
+                rules.append({
+                    "rule": "hourly_revenue_drop",
+                    "severity": "high",
+                    "message": f"Hourly revenue dropped {abs(drop_pct):.1f}% versus the previous completed hour.",
+                })
 
+    alerts = []
     for rule in rules:
-        existing = alerts_col.find_one({"target_hour": hour_iso, "rule": rule["rule"]})
-        if existing:
+        if alerts_col.find_one({"target_hour": hour_iso, "rule": rule["rule"]}):
             continue
         alert = {
             "source": "stream",
@@ -270,7 +275,6 @@ def create_hourly_alerts(alerts_col, hourly_col, hour_start, hourly_doc):
             "message": rule["message"],
             "created_at": datetime.now(timezone.utc),
         }
-        result = alerts_col.insert_one(alert)
-        alert["_id"] = result.inserted_id
+        alert["_id"] = alerts_col.insert_one(alert).inserted_id
         alerts.append(alert)
     return alerts

@@ -1,218 +1,215 @@
 """
 forecast_engine.py  —  Phase 3
 Team 03 | PulseBI Project
-Loads saved model, reads latest live hourly_metrics from MongoDB,
-generates predicted total_cost for the next hour,
-outputs clean JSON, saves to 'predictions' collection for Team 04.
+
+Loads the trained model, reads the latest hourly_metrics from MongoDB and
+predicts total_cost for the hour AFTER the latest COMPLETE hour.
+
+* Partial hours (the hour still in progress) are never used as input.
+* One prediction per target hour (upsert), so the log has no duplicates.
+* If duplicates already exist they are cleaned up instead of crashing.
 """
 
-import os
 import json
+import os
+import sys
 import time
-import pandas as pd
-from pymongo import MongoClient
-from dotenv import load_dotenv
+from datetime import datetime, timezone
+
 import joblib
-from datetime import datetime, timezone, timedelta
+import pandas as pd
+from dotenv import load_dotenv
+from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
+
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
 
 load_dotenv()
 
+from config import MIN_COMPLETE_EVENTS  # noqa: E402
+from analytics_ml.features import add_features, prepare_hourly  # noqa: E402
+
 MODEL_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "models", "sales_model.pkl"
+    os.path.dirname(os.path.abspath(__file__)), "models", "sales_model.pkl"
 )
-MONGO_URI = os.getenv(
-    "MONGODB_URI",
-    "mongodb://localhost:27017"
-)
+MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+INTERVAL_SECONDS = 30
+HOURS_TO_LOAD = 60
+
+
+def iso(ts):
+    return pd.Timestamp(ts).tz_convert("UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 # ─────────────────────────────────────────────────────────────────
 # 1. Load the trained model
 # ─────────────────────────────────────────────────────────────────
-print("\n" + "="*55)
+print("\n" + "=" * 55)
 print("  PulseBI — forecast_engine.py  |  Phase 3")
-print("="*55)
+print("=" * 55)
 print("\n[1/3] Loading trained model...")
 
 if not os.path.exists(MODEL_PATH):
     print(f"\n  ERROR: No model file found at:\n         {MODEL_PATH}")
-    print("\n  Fix: Run train_model.py first:")
-    print("       python analytics_ml/train_model.py\n")
-    exit()
+    print("\n  Fix: python analytics_ml/train_model.py\n")
+    sys.exit(1)
 
-saved    = joblib.load(MODEL_PATH)
-model    = saved["model"]
+saved = joblib.load(MODEL_PATH)
+model = saved["model"]
 FEATURES = saved["features"]
-mae      = saved.get("mae", "N/A")
 
-print(f"      ✓ Model loaded.")
+print("      ✓ Model loaded.")
 print(f"      Trained at       : {saved.get('trained_at', 'unknown')}")
 print(f"      Features used    : {FEATURES}")
-print(f"      Training MAE     : {mae}")
 
 # ─────────────────────────────────────────────────────────────────
 # 2. Connect to MongoDB
 # ─────────────────────────────────────────────────────────────────
-print("\n[2/3] Connecting to MongoDB Atlas...")
-client = MongoClient(MONGO_URI)
-db     = client["stream_analytics"]
+print("\n[2/3] Connecting to MongoDB...")
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+db = client[os.getenv("MONGODB_DATABASE", "stream_analytics")]
+client.admin.command("ping")
 print("      ✓ Connected.")
-db.predictions.create_index(
-    [("target_hour", 1), ("source", 1)],
-    unique=True,
-    partialFilterExpression={"source": {"$in": ["stream", "backtest"]}},
-)
 
-# ─────────────────────────────────────────────────────────────────
-# Helper functions
-# ─────────────────────────────────────────────────────────────────
 
-def fetch_latest_hourly(n=10):
-    """Fetch the n most recent documents from hourly_metrics."""
-    cursor = (
-        db.hourly_metrics
-        .find({}, {"_id": 0})
-        .sort("hour_start", -1)
-        .limit(n)
+def dedupe_predictions():
+    """Keep only the newest prediction per (target_hour, source)."""
+    pipeline = [
+        {"$match": {"source": {"$in": ["stream", "backtest"]}}},
+        {"$sort": {"saved_at": -1}},
+        {"$group": {
+            "_id": {"t": "$target_hour", "s": "$source"},
+            "keep": {"$first": "$_id"},
+            "all": {"$push": "$_id"},
+        }},
+    ]
+    removed = 0
+    for group in db.predictions.aggregate(pipeline):
+        extra = [doc_id for doc_id in group["all"] if doc_id != group["keep"]]
+        if extra:
+            removed += db.predictions.delete_many({"_id": {"$in": extra}}).deleted_count
+    return removed
+
+
+def ensure_unique_index():
+    spec = dict(
+        keys=[("target_hour", 1), ("source", 1)],
+        unique=True,
+        partialFilterExpression={"source": {"$in": ["stream", "backtest"]}},
     )
-    docs = list(cursor)
-    return docs
+    try:
+        db.predictions.create_index(spec["keys"], unique=True,
+                                    partialFilterExpression=spec["partialFilterExpression"])
+    except DuplicateKeyError:
+        removed = dedupe_predictions()
+        print(f"      Removed {removed} duplicate predictions, retrying index build...")
+        try:
+            db.predictions.create_index(spec["keys"], unique=True,
+                                        partialFilterExpression=spec["partialFilterExpression"])
+        except Exception as exc:  # keep running without the index
+            print(f"      WARNING: could not create unique index ({exc}). Continuing.")
 
 
-def build_feature_row(docs):
-    """
-    Build a single feature row from the latest hourly documents.
-    Matches the exact same feature engineering as train_model.py.
-    Returns a one-row DataFrame, or None if not enough data.
-    """
-    if len(docs) < 3:
-        return None, None
+ensure_unique_index()
 
-    df = pd.DataFrame(docs)
-    df["timestamp"] = pd.to_datetime(df["hour_start"])
-    df = df.sort_values("timestamp").reset_index(drop=True)
 
-    # Convert all numeric columns properly
-    for col in ["total_transactions", "avg_discount", "avg_rating",
-                "total_weight", "total_cost"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+# ─────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────
+def fetch_latest_hourly(n=HOURS_TO_LOAD):
+    cursor = db.hourly_metrics.find({}, {"_id": 0}).sort("hour_start", -1).limit(n)
+    return list(cursor)
 
-    latest = df.iloc[-1]
-    base_ts = pd.to_datetime(latest["timestamp"])
-    if base_ts.tzinfo is None:
-        base_ts = base_ts.tz_localize("UTC")
-    else:
-        base_ts = base_ts.tz_convert("UTC")
-    ts = base_ts + pd.Timedelta(hours=1)
 
-    # Build the same features that train_model.py used
-    row = {
-        "total_transactions" : float(latest.get("total_transactions", 0) or 0),
-        "avg_discount"       : float(latest.get("avg_discount", 0) or 0),
-        "avg_rating"         : float(latest.get("avg_rating", 0) or 0),
-        "total_weight"       : float(latest.get("total_weight", 0) or 0),
-        "hour"               : ts.hour,
-        "day_of_week"        : ts.day_of_week,
-        "day_of_month"       : ts.day,
-        "is_weekend"         : int(ts.day_of_week >= 5),
-        "lag_1h"             : float(df["total_cost"].iloc[-2]) if len(df) >= 2 and "total_cost" in df.columns else 0.0,
-        "lag_2h"             : float(df["total_cost"].iloc[-3]) if len(df) >= 3 and "total_cost" in df.columns else 0.0,
-        "lag_3h"             : float(df["total_cost"].iloc[-4]) if len(df) >= 4 and "total_cost" in df.columns else 0.0,
-        "rolling_3h_mean"    : float(df["total_cost"].iloc[-4:-1].mean()) if len(df) >= 4 and "total_cost" in df.columns else 0.0,
+def make_prediction():
+    """Return a prediction dict, or a short string explaining why not."""
+    docs = fetch_latest_hourly()
+    if not docs:
+        return "No data in hourly_metrics yet."
+
+    full, stats = prepare_hourly(docs, MIN_COMPLETE_EVENTS)
+    frame = add_features(full)
+
+    missing = [c for c in FEATURES if c not in frame.columns]
+    if missing:
+        raise RuntimeError(f"Model expects features that are not built: {missing}. "
+                           "Re-run train_model.py.")
+
+    ready = frame.dropna(subset=FEATURES)
+    if ready.empty:
+        return ("Waiting for 4 consecutive complete hours "
+                f"(complete hours loaded: {stats['complete_hours']}).")
+
+    row = ready.iloc[[-1]]
+    based_on = row.index[0]
+    target = based_on + pd.Timedelta(hours=1)
+    current_hour = pd.Timestamp.now(tz="UTC").floor("h")
+    if target < current_hour:
+        latest_complete = frame["total_cost"].dropna().index[-1]
+        if latest_complete > based_on:
+            streak = 0
+            for value in reversed(frame["total_cost"].loc[:latest_complete].tolist()):
+                if pd.isna(value):
+                    break
+                streak += 1
+            return (f"Stream is running again after a gap: {streak} consecutive complete hour(s) so far. "
+                    "4 are needed for the lag features before live predictions resume.")
+        return (f"Latest complete hour is {iso(based_on)}, older than the current hour. "
+                "The stream looks idle, so no live prediction is made.")
+
+    predicted = max(0.0, float(model.predict(row[FEATURES])[0]))
+    return {
+        "predicted_total_cost_next_hour": round(predicted, 2),
+        "prediction_time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "based_on_latest_hour": iso(based_on),
+        "target_hour": iso(target),
+        "source": "stream",
+        "records_used": stats["complete_hours"],
+        "model_version": "xgboost_v1",
+        "status": "ok",
     }
 
-    # Build DataFrame with only the columns the model expects, in correct order
-    feature_df = pd.DataFrame([row])
-    for col in FEATURES:
-        if col not in feature_df.columns:
-            feature_df[col] = 0.0
 
-    return feature_df[FEATURES], latest
-
-
-def save_prediction_to_db(output_dict):
-    """Save the prediction JSON into MongoDB for Team 04's API to read."""
-    record = {**output_dict, "saved_at": datetime.now(timezone.utc)}
+def save_prediction(output):
+    now = datetime.now(timezone.utc)
+    record = {**output, "saved_at": now}
     result = db.predictions.update_one(
         {"target_hour": record["target_hour"], "source": "stream"},
-        {"$set": record},
+        {"$set": record, "$setOnInsert": {"created_at": now}},
         upsert=True,
     )
-    return str(result.upserted_id or "existing")
+    return "new" if result.upserted_id else "updated"
 
 
 # ─────────────────────────────────────────────────────────────────
-# 3. Live prediction loop
+# 3. Live loop
 # ─────────────────────────────────────────────────────────────────
 print("\n[3/3] Starting live prediction loop.")
-print("      A new forecast is generated every 30 seconds.")
-print("      Predictions are saved to the 'predictions' collection.")
-print("      Team 04 can read from that collection via their API.")
+print(f"      A forecast is refreshed every {INTERVAL_SECONDS} seconds.")
+print("      One prediction is stored per target hour.")
 print("      Press Ctrl+C to stop.\n")
 print("─" * 55)
 
 cycle = 0
-
-while True:
-    cycle += 1
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    try:
-        docs = fetch_latest_hourly(n=10)
-
-        if not docs:
-            print(f"[{now}]  Cycle {cycle}: No data in hourly_metrics yet.")
-            print(f"           Waiting for Team 02's pipeline to insert data...")
-
-        else:
-            features, latest_doc = build_feature_row(docs)
-
-            if features is None:
-                print(f"[{now}]  Cycle {cycle}: Only {len(docs)} records found.")
-                print(f"           Need at least 3. Waiting for more data...")
-
+try:
+    while True:
+        cycle += 1
+        now_label = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        try:
+            result = make_prediction()
+            if isinstance(result, str):
+                print(f"[{now_label}]  Cycle {cycle}: {result}")
             else:
-                # Run the prediction
-                raw_prediction = model.predict(features)[0]
-                predicted_cost = max(0.0, float(raw_prediction))  # never negative
-
-                latest_hour = pd.to_datetime(latest_doc.get("hour_start"))
-                if latest_hour.tzinfo is None:
-                    latest_hour = latest_hour.tz_localize("UTC")
-                else:
-                    latest_hour = latest_hour.tz_convert("UTC")
-                latest_hour_iso = latest_hour.isoformat().replace("+00:00", "Z")
-                target_hour = (latest_hour + timedelta(hours=1)).replace(
-                    minute=0, second=0, microsecond=0
-                ).isoformat().replace("+00:00", "Z")
-
-                # Clean JSON output — this is what Team 04 will consume
-                output = {
-                    "predicted_total_cost_next_hour" : round(predicted_cost, 2),
-                    "prediction_time"                : datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "based_on_latest_hour"           : latest_hour_iso,
-                    "target_hour"                    : target_hour,
-                    "source"                         : "stream",
-                    "records_used"                   : len(docs),
-                    "model_version"                  : "xgboost_v1",
-                    "status"                         : "ok",
-                }
-
-                # Print to console
-                print(f"[{now}]  Cycle {cycle}:")
-                print(json.dumps(output, indent=4, default=str))
-
-                # Save to MongoDB
-                doc_id = save_prediction_to_db(output)
-                print(f"           ✓ Saved to 'predictions' collection. ID: {doc_id}")
-
-    except KeyboardInterrupt:
-        print("\n\n  Stopped by user. Goodbye.\n")
-        break
-    except Exception as e:
-        print(f"[{now}]  ERROR in cycle {cycle}: {e}")
-        print(f"           Will retry in 30 seconds...")
-
-    print("─" * 55)
-    time.sleep(30)
+                print(f"[{now_label}]  Cycle {cycle}:")
+                print(json.dumps(result, indent=4))
+                state = save_prediction(result)
+                print(f"           ✓ Prediction {state} for target hour {result['target_hour']}")
+        except Exception as exc:
+            print(f"[{now_label}]  ERROR in cycle {cycle}: {exc}")
+            print(f"           Will retry in {INTERVAL_SECONDS} seconds...")
+        print("─" * 55)
+        time.sleep(INTERVAL_SECONDS)
+except KeyboardInterrupt:
+    print("\n\n  Stopped by user. Goodbye.\n")

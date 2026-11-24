@@ -8,6 +8,7 @@ import { fetchHourlyMetrics, fetchHistoricalData, fetchPredictions } from '../se
 import { computeKPIs } from '../services/dummyData';
 import wsService from '../services/websocket';
 import { browserTimezoneLabel, formatBrowserDateTime } from '../utils/dateTime';
+import { isCompleteHour } from '../utils/format';
 
 const fmt = (n) =>
   n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` :
@@ -67,7 +68,7 @@ export default function Dashboard({ wsStatus, pushAlert }) {
       const p = predRes.predictions?.length ? predRes.predictions : [];
 
       // 24h window ending at the newest hourly document, plus the 24h before it
-      const sortedHours = [...h].sort(
+      const sortedHours = [...h].filter(isCompleteHour).sort(
         (a, b) => new Date(b.hour_start) - new Date(a.hour_start),
       );
       const newestHour = sortedHours[0] ? new Date(sortedHours[0].hour_start) : null;
@@ -140,11 +141,11 @@ export default function Dashboard({ wsStatus, pushAlert }) {
       }, 1200);
 
       // Lightweight incremental KPI update (the next REST poll corrects it)
-      setKpis((prev) => ({
-        ...prev,
-        totalOrders: prev.totalOrders + 1,
-        totalRevenue: prev.totalRevenue + (data.cost_of_product || 0),
-      }));
+      //setKpis((prev) => ({
+        //...prev,
+        //totalOrders: prev.totalOrders + 1,
+        //totalRevenue: prev.totalRevenue + (data.cost_of_product || 0),
+      //}));
     };
 
     const onPred = (data) => {

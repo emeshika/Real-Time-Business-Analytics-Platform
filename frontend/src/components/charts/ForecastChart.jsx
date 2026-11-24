@@ -89,9 +89,9 @@ export default function ForecastChart({ hourlyData = [], predictions = [] }) {
     ...Object.keys(predMap),
   ])).sort();
   const windowStart = new Date(nowHour.getTime() - 23 * 60 * 60 * 1000);
-  const last24Keys = allKeys.filter((time) => {
+    const last24Keys = allKeys.filter((time) => {
     const value = new Date(time);
-    return value >= windowStart && value <= nowHour;
+    return value >= windowStart && value <= new Date(nowHour.getTime() + 60 * 60 * 1000);
   });
   const chartData = last24Keys.map((time) => ({
     time,
@@ -151,7 +151,7 @@ export default function ForecastChart({ hourlyData = [], predictions = [] }) {
           stroke="#6366f1"
           strokeWidth={2}
           strokeDasharray="6 3"
-          dot={false}
+          dot={{ r: 3 }}
           connectNulls
           animationDuration={600}
         />

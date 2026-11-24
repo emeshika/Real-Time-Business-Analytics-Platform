@@ -10,8 +10,6 @@ import wsService from '../services/websocket';
 import { browserTimezoneLabel, formatBrowserDateTime } from '../utils/dateTime';
 import { isCompleteHour } from '../utils/format';
 
-const [coverage, setCoverage] = useState({ current: 0, previous: 0 });
-
 const fmt = (n) =>
   n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` :
   n >= 1_000     ? `$${(n / 1_000).toFixed(1)}K` :
@@ -27,6 +25,7 @@ const isStreamRow = (tx) => tx.source === 'stream' && tx.id >= 1 && tx.id <= 109
 
 export default function Dashboard({ wsStatus, pushAlert }) {
   // ── State ───────────────────────────────────────────────────
+  const [coverage, setCoverage] = useState({ current: 0, previous: 0 });
   const [hourlyData, setHourlyData]       = useState([]);
   const [transactions, setTransactions]   = useState([]);
   const [predictions, setPredictions]     = useState([]);
